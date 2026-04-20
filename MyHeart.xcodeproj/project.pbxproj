@@ -9,18 +9,23 @@
 /* Begin PBXBuildFile section */
 		0E581B4463CCB7BAB783741F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BD2AC7001B6FBA86473019 /* ContentView.swift */; };
 		151CCE2A61928A0B23BAE6E2 /* PDFExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D7487AAD9F09504367E62C4 /* PDFExporter.swift */; };
+		2EE616411365331510495D2B /* HeartRateZone.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC762F303F149D7C079ABB11 /* HeartRateZone.swift */; };
 		5C4C10994BD0E76D012E8466 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E7FF79612998201836E99C38 /* Assets.xcassets */; };
 		6F276920004834A0A2A6FDFD /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */; };
 		8172D2ED6BD9205CBB63B213 /* HeartRateSample.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */; };
 		BDD99AB21DA0F5EB0669E033 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */; };
+		D51112F540222248BE8E9152 /* UserProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */; };
+		DA354EE6A341379C71867A05 /* Derived.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0091DC43FE0E0E93899E3EA8 /* Derived.swift */; };
 		DEA9DA3941AB1347ABCE0B09 /* HeartRateViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AEC925BC1C7A0A933DB736 /* HeartRateViewModel.swift */; };
 		ECE69C598ED09637EC29A5C4 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */; };
 		F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */; };
 		FB368C1EC17EC404001324D6 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49DDE11F44AF984F62837BAC /* HealthKitManager.swift */; };
 		FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */; };
+		FBF5A55538FDE3321ED97729 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E369644295D6CE6002655054 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0091DC43FE0E0E93899E3EA8 /* Derived.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Derived.swift; sourceTree = "<group>"; };
 		03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateSample.swift; sourceTree = "<group>"; };
 		2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
@@ -30,11 +35,14 @@
 		68AEC925BC1C7A0A933DB736 /* HeartRateViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateViewModel.swift; sourceTree = "<group>"; };
 		7D7487AAD9F09504367E62C4 /* PDFExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExporter.swift; sourceTree = "<group>"; };
 		93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
-		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
 		E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHeartApp.swift; sourceTree = "<group>"; };
+		E369644295D6CE6002655054 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E7FF79612998201836E99C38 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		EAEE3299B124B2271EBAD0D8 /* MyHeart.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyHeart.entitlements; sourceTree = "<group>"; };
+		EC762F303F149D7C079ABB11 /* HeartRateZone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateZone.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -66,7 +74,10 @@
 		4D2ABC3DC3493A52504CE9D2 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				0091DC43FE0E0E93899E3EA8 /* Derived.swift */,
 				0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */,
+				EC762F303F149D7C079ABB11 /* HeartRateZone.swift */,
+				CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -93,6 +104,7 @@
 			children = (
 				93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */,
 				2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */,
+				E369644295D6CE6002655054 /* SettingsView.swift */,
 				03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */,
 			);
 			path = Views;
@@ -151,6 +163,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					7B7E6561DC9CBA9EF7E7EBB3 = {
+						DevelopmentTeam = "";
+					};
+				};
 			};
 			buildConfigurationList = 4A955A0E2908D4AAE583A395 /* Build configuration list for PBXProject "MyHeart" */;
 			developmentRegion = en;
@@ -190,13 +207,17 @@
 			files = (
 				0E581B4463CCB7BAB783741F /* ContentView.swift in Sources */,
 				F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */,
+				DA354EE6A341379C71867A05 /* Derived.swift in Sources */,
 				FB368C1EC17EC404001324D6 /* HealthKitManager.swift in Sources */,
 				8172D2ED6BD9205CBB63B213 /* HeartRateSample.swift in Sources */,
 				DEA9DA3941AB1347ABCE0B09 /* HeartRateViewModel.swift in Sources */,
+				2EE616411365331510495D2B /* HeartRateZone.swift in Sources */,
 				BDD99AB21DA0F5EB0669E033 /* HistoryView.swift in Sources */,
 				FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */,
 				151CCE2A61928A0B23BAE6E2 /* PDFExporter.swift in Sources */,
+				FBF5A55538FDE3321ED97729 /* SettingsView.swift in Sources */,
 				ECE69C598ED09637EC29A5C4 /* ShareSheet.swift in Sources */,
+				D51112F540222248BE8E9152 /* UserProfile.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -277,7 +298,6 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
-				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;
@@ -359,7 +379,6 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
-				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;

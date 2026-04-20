@@ -99,6 +99,44 @@ final class HealthKitManager {
         try await fetchLatestQuantity(for: hrvType, unit: .secondUnit(with: .milli))
     }
 
+    /// Average resting heart rate across a window (discreteAverage over HKHealthStore).
+    func fetchAverageResting(start: Date, end: Date) async throws -> Double? {
+        try await fetchAverageQuantity(for: restingHeartRateType, unit: bpmUnit, start: start, end: end)
+    }
+
+    /// Average HRV (SDNN) across a window.
+    func fetchAverageHRV(start: Date, end: Date) async throws -> Double? {
+        try await fetchAverageQuantity(
+            for: hrvType,
+            unit: .secondUnit(with: .milli),
+            start: start,
+            end: end
+        )
+    }
+
+    private func fetchAverageQuantity(
+        for type: HKQuantityType,
+        unit: HKUnit,
+        start: Date,
+        end: Date
+    ) async throws -> Double? {
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKStatisticsQuery(
+                quantityType: type,
+                quantitySamplePredicate: predicate,
+                options: .discreteAverage
+            ) { _, stats, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume(returning: stats?.averageQuantity()?.doubleValue(for: unit))
+            }
+            store.execute(query)
+        }
+    }
+
     /// Fetches per-day min/avg/max heart rate and resting heart rate between `start` and `end`.
     func fetchDailyStats(start: Date, end: Date, calendar: Calendar = .current) async throws -> [DailyHeartRateStats] {
         let dayComp = DateComponents(day: 1)

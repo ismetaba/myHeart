@@ -18,8 +18,12 @@ enum PDFExporter {
 
     static func exportOverall(
         summary: HeartRateSummary,
+        previousSummary: HeartRateSummary,
         samples: [HeartRateSample],
-        rangeTitle: String
+        zones: ZoneBreakdown,
+        maxHR: Double,
+        rangeTitle: String,
+        previousRangeLabel: String
     ) throws -> URL {
         let data = render { ctx in
             let header = Header(
@@ -32,19 +36,39 @@ enum PDFExporter {
             y += 12
 
             y = drawSectionHeader("Summary", y: y)
-            y = drawKeyValueTwoColumn([
-                ("Latest", summary.latest.map { "\(Int($0.bpm)) BPM • \(shortDate($0.date))" } ?? "—"),
-                ("Average", format(summary.averageBPM, unit: "BPM")),
-                ("Resting", format(summary.restingBPM, unit: "BPM")),
-                ("HRV (SDNN)", format(summary.hrvSDNN, unit: "ms")),
-                ("Min", format(summary.minBPM, unit: "BPM")),
-                ("Max", format(summary.maxBPM, unit: "BPM")),
-                ("Samples", "\(summary.sampleCount)"),
-            ], y: y)
-            y += 16
+            y = drawDeltaKeyValueGrid(
+                [
+                    ("Latest", summary.latest.map { "\(Int($0.bpm)) BPM • \(shortDate($0.date))" } ?? "—", nil, nil),
+                    ("Average", format(summary.averageBPM, unit: "BPM"),
+                     deltaText(current: summary.averageBPM, previous: previousSummary.averageBPM, unit: "bpm"),
+                     deltaKind(current: summary.averageBPM, previous: previousSummary.averageBPM, lowerIsBetter: nil)),
+                    ("Resting", format(summary.restingBPM, unit: "BPM"),
+                     deltaText(current: summary.restingBPM, previous: previousSummary.restingBPM, unit: "bpm"),
+                     deltaKind(current: summary.restingBPM, previous: previousSummary.restingBPM, lowerIsBetter: true)),
+                    ("HRV (SDNN)", format(summary.hrvSDNN, unit: "ms"),
+                     deltaText(current: summary.hrvSDNN, previous: previousSummary.hrvSDNN, unit: "ms"),
+                     deltaKind(current: summary.hrvSDNN, previous: previousSummary.hrvSDNN, lowerIsBetter: false)),
+                    ("Min", format(summary.minBPM, unit: "BPM"), nil, nil),
+                    ("Max", format(summary.maxBPM, unit: "BPM"), nil, nil),
+                    ("Samples", "\(summary.sampleCount)", nil, nil),
+                    ("vs", previousRangeLabel, nil, nil),
+                ],
+                y: y
+            )
+            y += 14
+
+            // Zones
+            if zones.totalDuration > 0 {
+                y = drawSectionHeader("Time in Zones", y: y)
+                let barRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 16)
+                drawZoneStackedBar(breakdown: zones, in: barRect)
+                y += barRect.height + 10
+                y = drawZoneTable(breakdown: zones, maxHR: maxHR, y: y)
+                y += 10
+            }
 
             y = drawSectionHeader("Heart Rate Trend", y: y)
-            let chartRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 240)
+            let chartRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 220)
             drawLineChart(samples: samples, averageBPM: summary.averageBPM, in: chartRect)
             y += chartRect.height + 18
 
@@ -73,6 +97,8 @@ enum PDFExporter {
     static func exportDaily(
         stats: [DailyHeartRateStats],
         samples: [HeartRateSample],
+        zonesByDay: [Date: ZoneBreakdown],
+        maxHR: Double,
         start: Date,
         end: Date
     ) throws -> URL {
@@ -82,6 +108,9 @@ enum PDFExporter {
             let day = calendar.startOfDay(for: sample.date)
             samplesByDay[day, default: []].append(sample)
         }
+
+        // Aggregate zones across all days for the "Period Zones" section.
+        let aggregateZones = HeartRateZoneAnalyzer.breakdown(samples: samples, maxHR: maxHR)
 
         let data = render { ctx in
             let header = Header(
@@ -108,12 +137,21 @@ enum PDFExporter {
             ], y: y)
             y += 16
 
+            if aggregateZones.totalDuration > 0 {
+                y = drawSectionHeader("Time in Zones (entire range)", y: y)
+                let barRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 16)
+                drawZoneStackedBar(breakdown: aggregateZones, in: barRect)
+                y += barRect.height + 10
+                y = drawZoneTable(breakdown: aggregateZones, maxHR: maxHR, y: y)
+                y += 10
+            }
+
             // Per-day detail: one 24-hour chart per day
             y = drawSectionHeader("Per-Day Detail (24-Hour View)", y: y)
             y += 4
 
             let dayChartHeight: CGFloat = 140
-            let dayBlockHeight: CGFloat = dayChartHeight + 46  // header lines + chart + spacing
+            let dayBlockHeight: CGFloat = dayChartHeight + 58  // header + zone strip + chart + spacing
             for day in stats {
                 if y + dayBlockHeight > pageHeight - margin {
                     ctx.beginPage()
@@ -121,6 +159,14 @@ enum PDFExporter {
                     y = drawPageHeader("MyHeart Daily Report — continued", y: y) + 8
                 }
                 y = drawDayHeader(day: day, y: y)
+
+                // Zone strip
+                if let zb = zonesByDay[day.day], zb.totalDuration > 0 {
+                    let stripRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 6)
+                    drawZoneStackedBar(breakdown: zb, in: stripRect, cornerRadius: 2)
+                    y += stripRect.height + 6
+                }
+
                 let daySamples = samplesByDay[day.day] ?? []
                 let chartRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: dayChartHeight)
                 drawDay24hChart(samples: daySamples, dayStart: day.day, averageBPM: day.avgBPM, in: chartRect)
@@ -484,18 +530,36 @@ enum PDFExporter {
         drawLine(from: CGPoint(x: plot.minX, y: plot.maxY), to: CGPoint(x: plot.maxX, y: plot.maxY), color: axisColor)
         drawLine(from: CGPoint(x: plot.minX, y: plot.minY), to: CGPoint(x: plot.minX, y: plot.maxY), color: axisColor)
 
-        // Line
-        let path = UIBezierPath()
+        // Scatter: faint connector + dot at each sample
         let sorted = daySamples.sorted { $0.date < $1.date }
+
+        let connector = UIBezierPath()
+        var points: [CGPoint] = []
+        points.reserveCapacity(sorted.count)
         for (i, s) in sorted.enumerated() {
             let x = plot.minX + CGFloat((s.date.timeIntervalSince1970 - tMin) / tRange) * plot.width
             let y = plot.maxY - CGFloat((s.bpm - yMin) / (yMax - yMin)) * plot.height
-            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-            else { path.addLine(to: CGPoint(x: x, y: y)) }
+            let p = CGPoint(x: x, y: y)
+            points.append(p)
+            if i == 0 { connector.move(to: p) }
+            else { connector.addLine(to: p) }
         }
-        lineColor.setStroke()
-        path.lineWidth = 1.0
-        path.stroke()
+        lineColor.withAlphaComponent(0.22).setStroke()
+        connector.lineWidth = 0.6
+        connector.lineCapStyle = .round
+        connector.stroke()
+
+        // Dots — scale slightly with density so dense days don't blob together
+        let dotRadius: CGFloat = sorted.count > 600 ? 1.2 : (sorted.count > 200 ? 1.5 : 1.9)
+        lineColor.setFill()
+        for p in points {
+            UIBezierPath(ovalIn: CGRect(
+                x: p.x - dotRadius,
+                y: p.y - dotRadius,
+                width: dotRadius * 2,
+                height: dotRadius * 2
+            )).fill()
+        }
 
         // Y-axis label
         drawString("BPM", at: CGPoint(x: rect.minX + 4, y: rect.minY + 2), attrs: [
@@ -643,5 +707,179 @@ enum PDFExporter {
         fmt.dateStyle = .medium
         fmt.timeStyle = .none
         return fmt.string(from: date)
+    }
+
+    // MARK: - Delta helpers
+
+    private enum DeltaKind {
+        case improvement, decline, neutral
+        var color: UIColor {
+            switch self {
+            case .improvement: return UIColor.systemGreen
+            case .decline:     return UIColor.systemOrange
+            case .neutral:     return UIColor.darkGray
+            }
+        }
+    }
+
+    private static func deltaText(current: Double?, previous: Double?, unit: String) -> String? {
+        guard let c = current, let p = previous else { return nil }
+        let d = c - p
+        guard abs(d) >= 0.5 else { return nil }
+        let sign = d > 0 ? "+" : "−"
+        return "\(sign)\(Int(abs(d).rounded())) \(unit)"
+    }
+
+    private static func deltaKind(current: Double?, previous: Double?, lowerIsBetter: Bool?) -> DeltaKind? {
+        guard let c = current, let p = previous else { return nil }
+        let d = c - p
+        guard abs(d) >= 0.5 else { return .neutral }
+        guard let lowerIsBetter else { return .neutral }
+        let goingDown = d < 0
+        let improvement = (goingDown && lowerIsBetter) || (!goingDown && !lowerIsBetter)
+        return improvement ? .improvement : .decline
+    }
+
+    /// Key/value two-column grid with optional per-row delta text.
+    private static func drawDeltaKeyValueGrid(
+        _ items: [(String, String, String?, DeltaKind?)],
+        y: CGFloat
+    ) -> CGFloat {
+        let colWidth = (pageWidth - margin * 2) / 2
+        let keyAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: labelColor,
+        ]
+        let valAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: bodyColor,
+        ]
+
+        var y = y
+        let rowHeight: CGFloat = 20
+        for i in stride(from: 0, to: items.count, by: 2) {
+            drawDeltaRow(items[i], x: margin, width: colWidth, y: y, keyAttrs: keyAttrs, valAttrs: valAttrs)
+            if i + 1 < items.count {
+                drawDeltaRow(items[i + 1], x: margin + colWidth, width: colWidth, y: y, keyAttrs: keyAttrs, valAttrs: valAttrs)
+            }
+            y += rowHeight
+        }
+        return y
+    }
+
+    private static func drawDeltaRow(
+        _ item: (String, String, String?, DeltaKind?),
+        x: CGFloat,
+        width: CGFloat,
+        y: CGFloat,
+        keyAttrs: [NSAttributedString.Key: Any],
+        valAttrs: [NSAttributedString.Key: Any]
+    ) {
+        (item.0 as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: keyAttrs)
+
+        let rightEdge = x + width - 4
+        var valX = rightEdge
+
+        // Draw delta (if any) first so we know how much space it takes
+        if let deltaStr = item.2, let kind = item.3 {
+            let deltaAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: kind.color,
+            ]
+            let size = (deltaStr as NSString).size(withAttributes: deltaAttrs)
+            let deltaOrigin = CGPoint(x: rightEdge - size.width, y: y + 1)
+            (deltaStr as NSString).draw(at: deltaOrigin, withAttributes: deltaAttrs)
+            valX = deltaOrigin.x - 6
+        }
+
+        let valSize = (item.1 as NSString).size(withAttributes: valAttrs)
+        (item.1 as NSString).draw(at: CGPoint(x: valX - valSize.width, y: y), withAttributes: valAttrs)
+    }
+
+    // MARK: - Zones
+
+    private static func drawZoneStackedBar(
+        breakdown: ZoneBreakdown,
+        in rect: CGRect,
+        cornerRadius: CGFloat = 3
+    ) {
+        // Background track
+        UIColor(white: 0.92, alpha: 1).setFill()
+        UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius).fill()
+
+        guard breakdown.totalDuration > 0 else { return }
+
+        var cursor = rect.minX
+        for zone in HeartRateZone.allCases {
+            let frac = breakdown.fraction(zone)
+            guard frac > 0 else { continue }
+            let width = rect.width * CGFloat(frac)
+            let slice = CGRect(x: cursor, y: rect.minY, width: width, height: rect.height)
+            zone.uiColor.setFill()
+            // Clip to rounded corners only on the outer slice edges; simple fill is fine since
+            // the track below already handles the rounding.
+            UIBezierPath(rect: slice).fill()
+            cursor += width
+        }
+    }
+
+    private static func drawZoneTable(
+        breakdown: ZoneBreakdown,
+        maxHR: Double,
+        y: CGFloat
+    ) -> CGFloat {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: bodyColor,
+        ]
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: bodyColor,
+        ]
+        let secondaryAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: labelColor,
+        ]
+
+        var y = y
+        let rowHeight: CGFloat = 14
+        for zone in HeartRateZone.allCases {
+            // Swatch
+            let swatchRect = CGRect(x: margin, y: y + 2, width: 10, height: 10)
+            zone.uiColor.setFill()
+            UIBezierPath(roundedRect: swatchRect, cornerRadius: 2).fill()
+
+            // Zone label
+            (zone.label as NSString).draw(
+                at: CGPoint(x: margin + 16, y: y),
+                withAttributes: labelAttrs
+            )
+
+            // BPM range
+            let range = zone.range(maxHR: maxHR)
+            let rangeText = zone == .peak ? "\(range.lowerBound)+ bpm" : "\(range.lowerBound)–\(range.upperBound) bpm"
+            (rangeText as NSString).draw(
+                at: CGPoint(x: margin + 100, y: y),
+                withAttributes: secondaryAttrs
+            )
+
+            // Duration
+            let dur = DurationFormat.compact(breakdown.duration(zone))
+            (dur as NSString).draw(
+                at: CGPoint(x: margin + 220, y: y),
+                withAttributes: attrs
+            )
+
+            // Percent
+            let pct = "\(Int((breakdown.fraction(zone) * 100).rounded()))%"
+            let pctSize = (pct as NSString).size(withAttributes: labelAttrs)
+            (pct as NSString).draw(
+                at: CGPoint(x: pageWidth - margin - pctSize.width, y: y),
+                withAttributes: labelAttrs
+            )
+
+            y += rowHeight
+        }
+        return y
     }
 }
