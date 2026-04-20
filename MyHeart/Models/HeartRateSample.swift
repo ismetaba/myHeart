@@ -32,3 +32,31 @@ struct HeartRateSummary: Hashable {
         rangeStart: Date(), rangeEnd: Date()
     )
 }
+
+struct DailyHeartRateStats: Identifiable, Hashable {
+    let id: UUID
+    let day: Date              // start of day
+    let minBPM: Double?
+    let avgBPM: Double?
+    let maxBPM: Double?
+    let restingBPM: Double?
+    let sampleCount: Int
+
+    init(
+        id: UUID = UUID(),
+        day: Date,
+        minBPM: Double?,
+        avgBPM: Double?,
+        maxBPM: Double?,
+        restingBPM: Double?,
+        sampleCount: Int
+    ) {
+        self.id = id
+        self.day = day
+        self.minBPM = minBPM
+        self.avgBPM = avgBPM
+        self.maxBPM = maxBPM
+        self.restingBPM = restingBPM
+        self.sampleCount = sampleCount
+    }
+}
