@@ -1,0 +1,51 @@
+name: MyHeart
+options:
+  bundleIdPrefix: com.myheart
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  MyHeart:
+    type: application
+    platform: iOS
+    sources:
+      - path: MyHeart
+    resources:
+      - path: MyHeart/Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.myheart.MyHeart
+        INFOPLIST_FILE: MyHeart/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MyHeart/MyHeart.entitlements
+        ENABLE_PREVIEWS: YES
+        DEVELOPMENT_ASSET_PATHS: '"MyHeart/Resources/Preview Content"'
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_EMIT_LOC_STRINGS: YES
+    entitlements:
+      path: MyHeart/MyHeart.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+    info:
+      path: MyHeart/Info.plist
+      properties:
+        CFBundleDisplayName: MyHeart
+        UILaunchScreen:
+          UIColorName: AccentColor
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSHealthShareUsageDescription: "MyHeart reads your heart rate, resting heart rate, and HRV from Apple Health to display insights and let you export a PDF summary."
+        NSHealthUpdateUsageDescription: "MyHeart does not write health data. This key is declared only in case future features need to save workouts."
