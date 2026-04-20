@@ -20,6 +20,7 @@ enum HealthKitError: LocalizedError {
 
 final class HealthKitManager {
     static let shared = HealthKitManager()
+    static let noSampleLimit: Int = HKObjectQueryNoLimit
 
     private let store = HKHealthStore()
 
@@ -113,8 +114,8 @@ final class HealthKitManager {
         async let maxC: HKStatisticsCollection = runStatisticsCollection(
             type: heartRateType, predicate: predicate, options: .discreteMax, anchor: anchor, interval: dayComp
         )
-        async let countC: HKStatisticsCollection = runStatisticsCollection(
-            type: heartRateType, predicate: predicate, options: .cumulativeSum, anchor: anchor, interval: dayComp
+        async let countsByDayTask: [Date: Int] = fetchSampleCountsByDay(
+            start: start, end: end, calendar: calendar
         )
         // Resting HR is one value per day already; use average for the bucket.
         async let restingC: HKStatisticsCollection = runStatisticsCollection(
@@ -128,7 +129,7 @@ final class HealthKitManager {
         let avgCol = try await avg
         let minCol = try await minC
         let maxCol = try await maxC
-        let countCol = try await countC
+        let countsByDay = try await countsByDayTask
         let restingCol = try await restingC
 
         var stats: [DailyHeartRateStats] = []
@@ -145,13 +146,7 @@ final class HealthKitManager {
             let restingStat = restingCol.statistics(for: avgStat.startDate)
             let restingVal = restingStat?.averageQuantity()?.doubleValue(for: self.bpmUnit)
 
-            // `cumulativeSum` on a discrete type isn't meaningful, but we can get sample count from the sources object count. Fallback to 0.
-            var count = 0
-            if let sources = countCol.statistics(for: avgStat.startDate)?.sources {
-                count = sources.count
-            }
-            // If we got any avg value, count > 0 at minimum.
-            if avgVal != nil, count == 0 { count = 1 }
+            let count = countsByDay[day] ?? 0
 
             stats.append(
                 DailyHeartRateStats(
@@ -165,6 +160,31 @@ final class HealthKitManager {
             )
         }
         return stats
+    }
+
+    private func fetchSampleCountsByDay(start: Date, end: Date, calendar: Calendar) async throws -> [Date: Int] {
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: heartRateType,
+                predicate: predicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: nil
+            ) { _, results, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume(returning: (results as? [HKQuantitySample]) ?? [])
+            }
+            store.execute(query)
+        }
+        var counts: [Date: Int] = [:]
+        for sample in samples {
+            let day = calendar.startOfDay(for: sample.endDate)
+            counts[day, default: 0] += 1
+        }
+        return counts
     }
 
     private func runStatisticsCollection(

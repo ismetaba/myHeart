@@ -10,6 +10,7 @@ final class HeartRateViewModel: ObservableObject {
 
     // Daily mode state
     @Published var dailyStats: [DailyHeartRateStats] = []
+    @Published var dailySamples: [HeartRateSample] = []
     @Published var dailyStart: Date
     @Published var dailyEnd: Date
 
@@ -139,7 +140,12 @@ final class HeartRateViewModel: ObservableObject {
     private func refreshDaily() async throws {
         let end = calendar.date(byAdding: .day, value: 1, to: dailyEnd) ?? dailyEnd
         let start = dailyStart
-        dailyStats = try await health.fetchDailyStats(start: start, end: end, calendar: calendar)
+        async let statsTask = health.fetchDailyStats(start: start, end: end, calendar: calendar)
+        async let samplesTask = health.fetchHeartRateSamples(
+            start: start, end: end, limit: HealthKitManager.noSampleLimit
+        )
+        dailyStats = try await statsTask
+        dailySamples = try await samplesTask
     }
 
     // MARK: - Helpers
@@ -224,6 +230,16 @@ extension HeartRateViewModel {
                 sampleCount: Int.random(in: 100...400)
             )
         }.reversed()
+        vm.dailySamples = (0..<7).flatMap { i -> [HeartRateSample] in
+            let dayStart = Calendar.current.date(byAdding: .day, value: -i, to: Calendar.current.startOfDay(for: now))!
+            return (0..<48).map { s in
+                HeartRateSample(
+                    bpm: Double(55 + Int.random(in: 0...60)),
+                    date: dayStart.addingTimeInterval(Double(s) * 1800),
+                    source: "Preview Watch"
+                )
+            }
+        }
         return vm
     }
 }

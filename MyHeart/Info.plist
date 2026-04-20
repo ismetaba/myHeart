@@ -15,13 +15,11 @@
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
-	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>$(MARKETING_VERSION)</string>
+	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
+	<string>1</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>MyHeart reads your heart rate, resting heart rate, and HRV from Apple Health to display insights and let you export a PDF summary.</string>
 	<key>NSHealthUpdateUsageDescription</key>
@@ -31,10 +29,6 @@
 		<key>UIColorName</key>
 		<string>AccentColor</string>
 	</dict>
-	<key>UIRequiredDeviceCapabilities</key>
-	<array>
-		<string>arm64</string>
-	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

@@ -411,6 +411,7 @@ struct DashboardView: View {
             case .daily:
                 url = try PDFExporter.exportDaily(
                     stats: viewModel.dailyStats,
+                    samples: viewModel.dailySamples,
                     start: viewModel.dailyStart,
                     end: viewModel.dailyEnd
                 )

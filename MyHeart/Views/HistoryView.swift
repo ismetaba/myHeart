@@ -7,11 +7,19 @@ struct HistoryView: View {
         NavigationStack {
             Group {
                 if viewModel.samples.isEmpty {
-                    ContentUnavailableView(
-                        "No Heart Rate Data",
-                        systemImage: "heart.slash",
-                        description: Text("Pull to refresh after recording samples in Apple Health.")
-                    )
+                    VStack(spacing: 12) {
+                        Image(systemName: "heart.slash")
+                            .font(.system(size: 44, weight: .regular))
+                            .foregroundStyle(.secondary)
+                        Text("No Heart Rate Data")
+                            .font(.headline)
+                        Text("Pull to refresh after recording samples in Apple Health.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(viewModel.samples) { sample in
                         HStack {
