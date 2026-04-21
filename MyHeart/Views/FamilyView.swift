@@ -498,7 +498,8 @@ struct FamilyView: View {
             if infoExpanded {
                 VStack(alignment: .leading, spacing: 8) {
                     bullet("Data is stored in your iCloud account and transmitted through Apple's servers. It never touches any MyHeart backend — there isn't one.")
-                    bullet("Only people who accept your invite link can see your live data. Revoke access by tapping Stop Sharing.")
+                    bullet("The invite link itself is the access key — anyone who receives it can view your live heart rate (like a Google Docs \"anyone with the link\" share). Don't post it publicly. Share it only with people you trust.")
+                    bullet("Tapping Stop Sharing revokes the link immediately; everyone loses access.")
                     bullet("Updates are throttled to one every 30 seconds; emergencies bypass the throttle.")
                     bullet("Revoking iCloud access for MyHeart in iOS Settings also stops the feature.")
                 }

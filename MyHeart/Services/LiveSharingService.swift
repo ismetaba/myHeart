@@ -157,10 +157,21 @@ final class LiveSharingService: ObservableObject {
         }
 
         // --- Reuse existing share if it still has a server URL ---
+        // IMPORTANT: upgrade its publicPermission to .readOnly if it's still
+        // `.none`. Sharing the URL via Messages / Mail / AirDrop delivers the
+        // invite to arbitrary Apple IDs — if the share is `.none`-only, those
+        // recipients see "Item Unavailable" because they aren't explicit
+        // participants. `.readOnly` is the standard "anyone with the link can
+        // view" model, which is what we want here.
         if let existingShareRef = record.share {
             do {
                 let rec = try await privateDB.record(for: existingShareRef.recordID)
                 if let existingShare = rec as? CKShare, existingShare.url != nil {
+                    if existingShare.publicPermission != .readOnly {
+                        LiveSharingService.log("upgrading existing share publicPermission → readOnly")
+                        existingShare.publicPermission = .readOnly
+                        _ = try await privateDB.save(existingShare)
+                    }
                     LiveSharingService.log("reusing existing share url=\(existingShare.url!.absoluteString)")
                     self.sharingEnabled = true
                     self.currentShareURL = existingShare.url
@@ -175,7 +186,7 @@ final class LiveSharingService: ObservableObject {
         // --- Create a fresh share bound to the record ---
         let share = CKShare(rootRecord: record)
         share[CKShare.SystemFieldKey.title] = "\(status.displayName)'s Heart Rate" as CKRecordValue
-        share.publicPermission = .none   // only invited participants
+        share.publicPermission = .readOnly   // anyone with the link can view
 
         LiveSharingService.log("saving record + share atomically")
         let result: (saveResults: [CKRecord.ID: Result<CKRecord, Error>],
