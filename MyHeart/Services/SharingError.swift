@@ -12,12 +12,28 @@ enum SharingError: LocalizedError {
     case permissionDenied
     case shareAlreadyAccepted
     case conflict
+    /// The iCloud container hasn't been provisioned on Apple's servers yet —
+    /// typically because Xcode's CloudKit capability wasn't enabled with a
+    /// real development team, or the container is newly created and
+    /// not yet ready. User-actionable.
+    case containerNotConfigured
     case unknown(String)
 
     static func wrap(_ error: Error) -> SharingError {
         if let ck = error as? CKError {
+            // The "couldn't get container configuration" error doesn't map
+            // cleanly to a single CKError code across iOS versions — peek at
+            // the message too.
+            let description = ck.localizedDescription.lowercased()
+            if description.contains("container configuration")
+                || description.contains("container not found")
+                || description.contains("couldn't get") && description.contains("container") {
+                return .containerNotConfigured
+            }
+
             switch ck.code {
             case .notAuthenticated:             return .notSignedIn
+            case .missingEntitlement:           return .containerNotConfigured
             case .networkUnavailable,
                  .networkFailure:               return .networkUnavailable
             case .quotaExceeded:                return .quotaExceeded
@@ -51,6 +67,8 @@ enum SharingError: LocalizedError {
             return "You already follow this person."
         case .conflict:
             return "Another device changed the record; retrying…"
+        case .containerNotConfigured:
+            return "iCloud container isn't provisioned yet. Open Xcode → Signing & Capabilities, select your Team, and enable the iCloud / CloudKit capability."
         case .unknown(let detail):
             return detail
         }

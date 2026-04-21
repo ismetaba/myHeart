@@ -18,8 +18,12 @@ struct FamilyView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     accountBanner
-                    sharingSection
-                    followingSection
+                    if isProvisioningError {
+                        setupGuideCard
+                    } else {
+                        sharingSection
+                        followingSection
+                    }
                     privacySection
                     Spacer(minLength: 24)
                 }
@@ -66,6 +70,71 @@ struct FamilyView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Everyone you invited will immediately lose access to your live heart data.")
+        }
+    }
+
+    // MARK: Provisioning detection
+
+    private var isProvisioningError: Bool {
+        guard let msg = sharing.lastPublishError?.lowercased() else { return false }
+        return msg.contains("container configuration")
+            || msg.contains("container isn't provisioned")
+            || msg.contains("missing entitlement")
+    }
+
+    private var setupGuideCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "wrench.and.screwdriver.fill")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                Text("One-time Xcode setup required")
+                    .font(.headline)
+                Spacer()
+            }
+
+            Text("MyHeart's live-sharing uses iCloud CloudKit. Your Apple Developer team hasn't provisioned the container on Apple's servers yet — this is a one-time step.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 10) {
+                setupStep(1, "Open the project in Xcode.")
+                setupStep(2, "Select the MyHeart target → Signing & Capabilities.")
+                setupStep(3, "Pick your Apple ID under Team. (Add one via Settings → Accounts if needed.)")
+                setupStep(4, "Make sure iCloud capability is added and CloudKit is ticked.")
+                setupStep(5, "Select or create the container: iCloud.com.myheart.MyHeart.")
+                setupStep(6, "Run the app again — this card will go away.")
+            }
+
+            HStack {
+                Button {
+                    Task { await sharing.refreshAccountStatus() }
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.pink.opacity(0.18)))
+                        .foregroundStyle(.pink)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    @ViewBuilder
+    private func setupStep(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            ZStack {
+                Circle().fill(Color.pink.opacity(0.18))
+                Text("\(number)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.pink)
+            }
+            .frame(width: 20, height: 20)
+            Text(text)
+                .font(.caption)
         }
     }
 
