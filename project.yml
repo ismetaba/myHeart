@@ -45,6 +45,7 @@ targets:
       path: MyHeart/Info.plist
       properties:
         CFBundleDisplayName: MyHeart
+        CFBundleIconName: AppIcon
         UILaunchScreen:
           UIColorName: AccentColor
         UISupportedInterfaceOrientations:
