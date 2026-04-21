@@ -97,11 +97,15 @@ final class LiveSharingService: ObservableObject {
     }
 
     /// Whether we already have a live-status record + active share.
+    /// A share without a populated URL is treated as "not active" — we don't
+    /// want to flip the UI into the active state and then be stuck showing
+    /// "Preparing invite link…" forever.
     private func loadSharingState() async {
         do {
             let record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
             let share = record.share != nil ? try? await fetchShare(for: record) : nil
-            sharingEnabled = share != nil
+            let hasUsableShare = (share?.url != nil)
+            sharingEnabled = hasUsableShare
             currentShareURL = share?.url
             participantCount = max(0, (share?.participants.count ?? 0) - 1)  // minus self
             if let status = LiveHeartStatus(record: record) {
@@ -171,47 +175,92 @@ final class LiveSharingService: ObservableObject {
         // --- Create a fresh share bound to the record ---
         let share = CKShare(rootRecord: record)
         share[CKShare.SystemFieldKey.title] = "\(status.displayName)'s Heart Rate" as CKRecordValue
-        share[CKShare.SystemFieldKey.shareType] = "com.myheart.LiveHeartShare" as CKRecordValue
         share.publicPermission = .none   // only invited participants
 
-        // Use the modern async-await modifyRecords API. It returns per-record
-        // Results whose success value is the *server-saved* CKRecord — a
-        // CKShare's `.url` is populated there, which isn't always true of the
-        // local object we passed in.
         LiveSharingService.log("saving record + share atomically")
         let result: (saveResults: [CKRecord.ID: Result<CKRecord, Error>],
                      deleteResults: [CKRecord.ID: Result<Void, Error>])
         do {
-            result = try await privateDB.modifyRecords(
-                saving: [record, share],
-                deleting: [],
-                savePolicy: .allKeys,
-                atomically: true
-            )
+            // Wrap in a 25s timeout so the UI never stays stuck on "Preparing…"
+            // if CloudKit is unreachable or the container isn't provisioned.
+            result = try await withThrowingTimeout(seconds: 25) {
+                try await self.privateDB.modifyRecords(
+                    saving: [record, share],
+                    deleting: [],
+                    savePolicy: .allKeys,
+                    atomically: true
+                )
+            }
+        } catch is CancellationError {
+            let msg = "Save timed out after 25s. Check iCloud sign-in and network, then try again."
+            LiveSharingService.log(msg)
+            self.lastPublishError = msg
+            throw SharingError.unknown(msg)
         } catch {
-            throw SharingError.wrap(error)
+            let wrapped = SharingError.wrap(error)
+            LiveSharingService.log("modifyRecords threw: \(error.localizedDescription) (\(type(of: error)))")
+            self.lastPublishError = wrapped.friendlyMessage
+            throw wrapped
         }
 
-        // The share save must succeed and include a URL.
+        // Log every per-record outcome — this is usually where CloudKit
+        // partial-failure surprises hide.
+        for (id, res) in result.saveResults {
+            switch res {
+            case .success(let r):
+                LiveSharingService.log("saved \(id.recordName) (\(type(of: r)))")
+            case .failure(let e):
+                LiveSharingService.log("save failed \(id.recordName): \(e.localizedDescription)")
+            }
+        }
+
         switch result.saveResults[share.recordID] {
         case .success(let savedRecord):
             guard let savedShare = savedRecord as? CKShare else {
-                throw SharingError.unknown("Saved record for share wasn't a CKShare")
+                let msg = "Saved record for share wasn't a CKShare (got \(type(of: savedRecord)))"
+                self.lastPublishError = msg
+                throw SharingError.unknown(msg)
             }
-            guard savedShare.url != nil else {
-                throw SharingError.unknown("Share saved but URL is still nil. Try again in a moment.")
+            guard let savedURL = savedShare.url else {
+                let msg = "Share saved but URL hasn't populated yet. Try again in a moment."
+                self.lastPublishError = msg
+                throw SharingError.unknown(msg)
             }
-            LiveSharingService.log("saved share url=\(savedShare.url!.absoluteString)")
+            LiveSharingService.log("saved share url=\(savedURL.absoluteString)")
 
             self.sharingEnabled = true
-            self.currentShareURL = savedShare.url
+            self.currentShareURL = savedURL
             self.lastPublishedStatus = status
+            self.lastPublishError = nil
             return (savedShare, container)
 
         case .failure(let error):
-            throw SharingError.wrap(error)
+            let wrapped = SharingError.wrap(error)
+            self.lastPublishError = wrapped.friendlyMessage
+            throw wrapped
         case .none:
-            throw SharingError.unknown("Share was not included in the save results")
+            let msg = "Share was not included in the save results"
+            self.lastPublishError = msg
+            throw SharingError.unknown(msg)
+        }
+    }
+
+    /// Races an async operation against a deadline. Throws `CancellationError`
+    /// on timeout. The underlying task is cancelled too, so CloudKit stops
+    /// reference-counting it.
+    private func withThrowingTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw CancellationError()
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
     }
 
