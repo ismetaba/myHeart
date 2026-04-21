@@ -22,16 +22,90 @@ final class HealthKitManager {
     static let shared = HealthKitManager()
     static let noSampleLimit: Int = HKObjectQueryNoLimit
 
-    private let store = HKHealthStore()
+    let store = HKHealthStore()
 
+    // MARK: - Types
+
+    // Heart
     private let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
     private let restingHeartRateType = HKQuantityType.quantityType(forIdentifier: .restingHeartRate)!
     private let hrvType = HKQuantityType.quantityType(forIdentifier: .heartRateVariabilitySDNN)!
+    private let walkingHeartRateType = HKQuantityType.quantityType(forIdentifier: .walkingHeartRateAverage)!
+    private let vo2MaxType = HKQuantityType.quantityType(forIdentifier: .vo2Max)
 
+    // Activity
+    private let stepCountType = HKQuantityType.quantityType(forIdentifier: .stepCount)!
+    private let distanceType = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning)!
+    private let flightsType = HKQuantityType.quantityType(forIdentifier: .flightsClimbed)!
+    private let activeEnergyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!
+    private let basalEnergyType = HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned)!
+    private let exerciseTimeType = HKQuantityType.quantityType(forIdentifier: .appleExerciseTime)!
+    private let standTimeType = HKQuantityType.quantityType(forIdentifier: .appleStandTime)
+
+    // Respiratory / oxygen
+    private let respiratoryRateType = HKQuantityType.quantityType(forIdentifier: .respiratoryRate)!
+    private let oxygenSaturationType = HKQuantityType.quantityType(forIdentifier: .oxygenSaturation)!
+
+    // Body
+    private let bodyMassType = HKQuantityType.quantityType(forIdentifier: .bodyMass)!
+    private let bmiType = HKQuantityType.quantityType(forIdentifier: .bodyMassIndex)!
+    private let heightType = HKQuantityType.quantityType(forIdentifier: .height)!
+    private let bodyFatType = HKQuantityType.quantityType(forIdentifier: .bodyFatPercentage)!
+    private let leanBodyMassType = HKQuantityType.quantityType(forIdentifier: .leanBodyMass)!
+
+    // Mobility
+    private let walkingSpeedType = HKQuantityType.quantityType(forIdentifier: .walkingSpeed)
+    private let walkingStepLengthType = HKQuantityType.quantityType(forIdentifier: .walkingStepLength)
+    private let walkingAsymmetryType = HKQuantityType.quantityType(forIdentifier: .walkingAsymmetryPercentage)
+    private let walkingDoubleSupportType = HKQuantityType.quantityType(forIdentifier: .walkingDoubleSupportPercentage)
+    private let stairAscentSpeedType = HKQuantityType.quantityType(forIdentifier: .stairAscentSpeed)
+    private let stairDescentSpeedType = HKQuantityType.quantityType(forIdentifier: .stairDescentSpeed)
+
+    // Nutrition
+    private let dietaryEnergyType = HKQuantityType.quantityType(forIdentifier: .dietaryEnergyConsumed)!
+    private let dietaryWaterType = HKQuantityType.quantityType(forIdentifier: .dietaryWater)!
+    private let caffeineType = HKQuantityType.quantityType(forIdentifier: .dietaryCaffeine)!
+    private let proteinType = HKQuantityType.quantityType(forIdentifier: .dietaryProtein)!
+
+    // Audio
+    private let headphoneDBAType = HKQuantityType.quantityType(forIdentifier: .headphoneAudioExposure)
+    private let environmentalDBAType = HKQuantityType.quantityType(forIdentifier: .environmentalAudioExposure)
+
+    // Sleep / mindfulness
+    private let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis)!
+    private let mindfulType = HKCategoryType.categoryType(forIdentifier: .mindfulSession)
+
+    // Units
     private let bpmUnit: HKUnit = HKUnit.count().unitDivided(by: .minute())
+    private let kcalUnit: HKUnit = .kilocalorie()
+    private let kmUnit: HKUnit = .meterUnit(with: .kilo)
+    private let kgUnit: HKUnit = .gramUnit(with: .kilo)
+    private let cmUnit: HKUnit = .meterUnit(with: .centi)
+    private let percentUnit: HKUnit = .percent()
+    private let breathsPerMinUnit: HKUnit = HKUnit.count().unitDivided(by: .minute())
+    private let meterPerSecondUnit: HKUnit = HKUnit.meter().unitDivided(by: .second())
+    private let decibelAWeightedUnit: HKUnit = .decibelAWeightedSoundPressureLevel()
+    private let litreUnit: HKUnit = .literUnit(with: .milli)
 
     private var readTypes: Set<HKObjectType> {
-        [heartRateType, restingHeartRateType, hrvType]
+        var types: Set<HKObjectType> = [
+            heartRateType, restingHeartRateType, hrvType, walkingHeartRateType,
+            stepCountType, distanceType, flightsType,
+            activeEnergyType, basalEnergyType, exerciseTimeType,
+            respiratoryRateType, oxygenSaturationType,
+            bodyMassType, bmiType, heightType, bodyFatType, leanBodyMassType,
+            dietaryEnergyType, dietaryWaterType, caffeineType, proteinType,
+            sleepType,
+        ]
+        let optional: [HKObjectType?] = [
+            vo2MaxType, standTimeType,
+            walkingSpeedType, walkingStepLengthType, walkingAsymmetryType, walkingDoubleSupportType,
+            stairAscentSpeedType, stairDescentSpeedType,
+            headphoneDBAType, environmentalDBAType,
+            mindfulType,
+        ]
+        for t in optional { if let t { types.insert(t) } }
+        return types
     }
 
     func requestAuthorization() async throws {

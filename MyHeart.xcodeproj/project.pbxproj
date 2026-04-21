@@ -12,7 +12,11 @@
 		2EE616411365331510495D2B /* HeartRateZone.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC762F303F149D7C079ABB11 /* HeartRateZone.swift */; };
 		5C4C10994BD0E76D012E8466 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E7FF79612998201836E99C38 /* Assets.xcassets */; };
 		6F276920004834A0A2A6FDFD /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */; };
+		745537CBA31A7516608B97D2 /* DetailViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1273F90FA76C09A2D812D0A /* DetailViews.swift */; };
 		8172D2ED6BD9205CBB63B213 /* HeartRateSample.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */; };
+		92CB4075276F52628F8BA82D /* HealthKitManager+Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */; };
+		92D52E324F3F4A8425DEA927 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01FF7AA50A03C2F3997C2558 /* OverviewView.swift */; };
+		A424037AD4777DE8BACF07E7 /* HealthOverview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E3425FB3435A912436325FA /* HealthOverview.swift */; };
 		BDD99AB21DA0F5EB0669E033 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */; };
 		D51112F540222248BE8E9152 /* UserProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */; };
 		DA354EE6A341379C71867A05 /* Derived.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0091DC43FE0E0E93899E3EA8 /* Derived.swift */; };
@@ -20,24 +24,30 @@
 		ECE69C598ED09637EC29A5C4 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */; };
 		F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */; };
 		FB368C1EC17EC404001324D6 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49DDE11F44AF984F62837BAC /* HealthKitManager.swift */; };
+		FB3B0A21BCDF3A0ADBBCC8F0 /* HealthOverviewViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D797B8F15203753B7589BB18 /* HealthOverviewViewModel.swift */; };
 		FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */; };
 		FBF5A55538FDE3321ED97729 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E369644295D6CE6002655054 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0091DC43FE0E0E93899E3EA8 /* Derived.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Derived.swift; sourceTree = "<group>"; };
+		01FF7AA50A03C2F3997C2558 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 		03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateSample.swift; sourceTree = "<group>"; };
+		2E3425FB3435A912436325FA /* HealthOverview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthOverview.swift; sourceTree = "<group>"; };
 		2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		46BD2AC7001B6FBA86473019 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		49DDE11F44AF984F62837BAC /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
 		4FE6D7C2A93A9EDE4A4CDCE0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		68AEC925BC1C7A0A933DB736 /* HeartRateViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateViewModel.swift; sourceTree = "<group>"; };
 		7D7487AAD9F09504367E62C4 /* PDFExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExporter.swift; sourceTree = "<group>"; };
+		82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthKitManager+Metrics.swift"; sourceTree = "<group>"; };
 		93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
+		D797B8F15203753B7589BB18 /* HealthOverviewViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthOverviewViewModel.swift; sourceTree = "<group>"; };
+		E1273F90FA76C09A2D812D0A /* DetailViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailViews.swift; sourceTree = "<group>"; };
 		E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHeartApp.swift; sourceTree = "<group>"; };
 		E369644295D6CE6002655054 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E7FF79612998201836E99C38 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -66,6 +76,7 @@
 		47D300DB47B16AC38BA57D02 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				D797B8F15203753B7589BB18 /* HealthOverviewViewModel.swift */,
 				68AEC925BC1C7A0A933DB736 /* HeartRateViewModel.swift */,
 			);
 			path = ViewModels;
@@ -75,6 +86,7 @@
 			isa = PBXGroup;
 			children = (
 				0091DC43FE0E0E93899E3EA8 /* Derived.swift */,
+				2E3425FB3435A912436325FA /* HealthOverview.swift */,
 				0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */,
 				EC762F303F149D7C079ABB11 /* HeartRateZone.swift */,
 				CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */,
@@ -86,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				49DDE11F44AF984F62837BAC /* HealthKitManager.swift */,
+				82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */,
 				7D7487AAD9F09504367E62C4 /* PDFExporter.swift */,
 			);
 			path = Services;
@@ -103,7 +116,9 @@
 			isa = PBXGroup;
 			children = (
 				93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */,
+				E1273F90FA76C09A2D812D0A /* DetailViews.swift */,
 				2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */,
+				01FF7AA50A03C2F3997C2558 /* OverviewView.swift */,
 				E369644295D6CE6002655054 /* SettingsView.swift */,
 				03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */,
 			);
@@ -208,12 +223,17 @@
 				0E581B4463CCB7BAB783741F /* ContentView.swift in Sources */,
 				F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */,
 				DA354EE6A341379C71867A05 /* Derived.swift in Sources */,
+				745537CBA31A7516608B97D2 /* DetailViews.swift in Sources */,
+				92CB4075276F52628F8BA82D /* HealthKitManager+Metrics.swift in Sources */,
 				FB368C1EC17EC404001324D6 /* HealthKitManager.swift in Sources */,
+				A424037AD4777DE8BACF07E7 /* HealthOverview.swift in Sources */,
+				FB3B0A21BCDF3A0ADBBCC8F0 /* HealthOverviewViewModel.swift in Sources */,
 				8172D2ED6BD9205CBB63B213 /* HeartRateSample.swift in Sources */,
 				DEA9DA3941AB1347ABCE0B09 /* HeartRateViewModel.swift in Sources */,
 				2EE616411365331510495D2B /* HeartRateZone.swift in Sources */,
 				BDD99AB21DA0F5EB0669E033 /* HistoryView.swift in Sources */,
 				FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */,
+				92D52E324F3F4A8425DEA927 /* OverviewView.swift in Sources */,
 				151CCE2A61928A0B23BAE6E2 /* PDFExporter.swift in Sources */,
 				FBF5A55538FDE3321ED97729 /* SettingsView.swift in Sources */,
 				ECE69C598ED09637EC29A5C4 /* ShareSheet.swift in Sources */,
