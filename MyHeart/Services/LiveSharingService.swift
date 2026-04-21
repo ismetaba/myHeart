@@ -125,12 +125,11 @@ final class LiveSharingService: ObservableObject {
 
     // MARK: - Enable / share creation
 
-    /// Called from inside `UICloudSharingController`'s preparation handler.
-    /// Returns the CKShare + container that the controller should present
-    /// the invite sheet for, after synchronously saving root record + share
-    /// together in a single atomic operation. (CloudKit requires that a
-    /// new share and its root record be saved together — otherwise it
-    /// throws "An added share is being saved without its rootRecord".)
+    /// Ensures the user has a `LiveHeartStatus` CKRecord + a CKShare on it.
+    /// Returns the server-saved CKShare (which has a live `.url`) and the
+    /// container. Pulls the share out of `modifyRecords(saving:deleting:)`'s
+    /// per-record save results, which is the reliable way to get server-side
+    /// system fields like `url` populated.
     func prepareShareForSheet(from status: LiveHeartStatus) async throws -> (CKShare, CKContainer) {
         guard accountStatus == .available else { throw SharingError.notSignedIn }
         isWorking = true
@@ -138,14 +137,14 @@ final class LiveSharingService: ObservableObject {
 
         await ensureZoneExists()
 
-        // Fetch-or-create the root record. We always save a fresh set of fields
-        // so the record *is* modified inside the save operation — avoids any
-        // CloudKit optimizer deciding to skip the record write.
+        // --- Fetch-or-create the root record ---
         let record: CKRecord
         do {
             record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
             status.apply(to: record)
+            LiveSharingService.log("fetched existing record, share ref: \(record.share?.recordID.recordName ?? "nil")")
         } catch let error as CKError where error.code == .unknownItem {
+            LiveSharingService.log("no existing record, creating new")
             record = CKRecord(
                 recordType: CloudKitConfig.RecordType.liveHeartStatus,
                 recordID: CloudKitConfig.liveStatusRecordID
@@ -153,44 +152,74 @@ final class LiveSharingService: ObservableObject {
             status.apply(to: record)
         }
 
-        // If a share already exists for this record, reuse it — don't try to
-        // create a second share (that's a CKError).
-        if let existingShareRef = record.share,
-           let existingShare = try? await privateDB.record(for: existingShareRef.recordID) as? CKShare {
-            self.sharingEnabled = true
-            self.currentShareURL = existingShare.url
-            self.lastPublishedStatus = status
-            return (existingShare, container)
+        // --- Reuse existing share if it still has a server URL ---
+        if let existingShareRef = record.share {
+            do {
+                let rec = try await privateDB.record(for: existingShareRef.recordID)
+                if let existingShare = rec as? CKShare, existingShare.url != nil {
+                    LiveSharingService.log("reusing existing share url=\(existingShare.url!.absoluteString)")
+                    self.sharingEnabled = true
+                    self.currentShareURL = existingShare.url
+                    self.lastPublishedStatus = status
+                    return (existingShare, container)
+                }
+            } catch {
+                LiveSharingService.log("existing share fetch failed, will create fresh: \(error.localizedDescription)")
+            }
         }
 
-        // New share. CKShare(rootRecord:) sets record.share → share for us;
-        // we save both in one CKModifyRecordsOperation.
+        // --- Create a fresh share bound to the record ---
         let share = CKShare(rootRecord: record)
         share[CKShare.SystemFieldKey.title] = "\(status.displayName)'s Heart Rate" as CKRecordValue
         share[CKShare.SystemFieldKey.shareType] = "com.myheart.LiveHeartShare" as CKRecordValue
         share.publicPermission = .none   // only invited participants
 
-        let saveOp = CKModifyRecordsOperation(recordsToSave: [record, share], recordIDsToDelete: nil)
-        // `.allKeys` forces a write even when the local change tag matches the
-        // server — CloudKit occasionally wants the root record present in the
-        // same op as a new share, and this avoids any short-circuit skipping it.
-        saveOp.savePolicy = .allKeys
-        saveOp.qualityOfService = .userInitiated
-
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            saveOp.modifyRecordsResultBlock = { result in
-                switch result {
-                case .success:       cont.resume()
-                case .failure(let e): cont.resume(throwing: SharingError.wrap(e))
-                }
-            }
-            privateDB.add(saveOp)
+        // Use the modern async-await modifyRecords API. It returns per-record
+        // Results whose success value is the *server-saved* CKRecord — a
+        // CKShare's `.url` is populated there, which isn't always true of the
+        // local object we passed in.
+        LiveSharingService.log("saving record + share atomically")
+        let result: (saveResults: [CKRecord.ID: Result<CKRecord, Error>],
+                     deleteResults: [CKRecord.ID: Result<Void, Error>])
+        do {
+            result = try await privateDB.modifyRecords(
+                saving: [record, share],
+                deleting: [],
+                savePolicy: .allKeys,
+                atomically: true
+            )
+        } catch {
+            throw SharingError.wrap(error)
         }
 
-        self.sharingEnabled = true
-        self.currentShareURL = share.url
-        self.lastPublishedStatus = status
-        return (share, container)
+        // The share save must succeed and include a URL.
+        switch result.saveResults[share.recordID] {
+        case .success(let savedRecord):
+            guard let savedShare = savedRecord as? CKShare else {
+                throw SharingError.unknown("Saved record for share wasn't a CKShare")
+            }
+            guard savedShare.url != nil else {
+                throw SharingError.unknown("Share saved but URL is still nil. Try again in a moment.")
+            }
+            LiveSharingService.log("saved share url=\(savedShare.url!.absoluteString)")
+
+            self.sharingEnabled = true
+            self.currentShareURL = savedShare.url
+            self.lastPublishedStatus = status
+            return (savedShare, container)
+
+        case .failure(let error):
+            throw SharingError.wrap(error)
+        case .none:
+            throw SharingError.unknown("Share was not included in the save results")
+        }
+    }
+
+    /// Log helper — prefixed so it's grep-able in Xcode console.
+    private static func log(_ msg: @autoclosure () -> String) {
+        #if DEBUG
+        print("[Sharing] \(msg())")
+        #endif
     }
 
     // MARK: - Stop sharing
