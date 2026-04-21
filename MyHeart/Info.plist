@@ -26,6 +26,8 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>CKSharingSupported</key>
+	<true/>
 	<key>NSHealthShareUsageDescription</key>
 	<string>MyHeart reads your heart rate, resting heart rate, and HRV from Apple Health to display insights and let you export a PDF summary.</string>
 	<key>NSHealthUpdateUsageDescription</key>

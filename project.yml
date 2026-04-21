@@ -46,6 +46,7 @@ targets:
       properties:
         CFBundleDisplayName: MyHeart
         CFBundleIconName: AppIcon
+        CKSharingSupported: true
         UILaunchScreen:
           UIColorName: AccentColor
         UISupportedInterfaceOrientations:
