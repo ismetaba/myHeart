@@ -19,6 +19,7 @@ extension LiveSharingService {
                 CKContainer(identifier: CloudKitConfig.containerIdentifier).add(op)
             }
             await refreshFollowed()
+            await ensureSharedDBSubscription()
         } catch {
             lastPublishError = "Couldn't accept invite: \(SharingError.wrap(error).friendlyMessage)"
         }

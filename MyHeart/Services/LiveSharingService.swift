@@ -63,6 +63,7 @@ final class LiveSharingService: ObservableObject {
         await ensureZoneExists()
         await loadSharingState()
         await refreshFollowed()
+        await ensureSharedDBSubscription()
     }
 
     func refreshAccountStatus() async {
@@ -232,6 +233,9 @@ final class LiveSharingService: ObservableObject {
         if new.zoneRaw != last.zoneRaw { return true }
         if abs(new.currentBPM - last.currentBPM) >= significantBPMDelta { return true }
         if new.isElevated != last.isElevated { return true }
+        // Emergency transitions always bypass the throttle — safety over quota.
+        if new.isEmergency != last.isEmergency { return true }
+        if new.emergencyKind != last.emergencyKind { return true }
         return false
     }
 

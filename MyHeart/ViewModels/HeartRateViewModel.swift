@@ -211,6 +211,8 @@ final class HeartRateViewModel: ObservableObject {
 
     /// Pushes the latest heart state into the live-sharing service.
     /// The service throttles/coalesces writes — call it often, it's cheap.
+    /// Runs emergency evaluation and opportunistically refreshes the
+    /// last-24h trend (capped to one fetch per 15 minutes).
     private func publishLiveStatusIfSharing() {
         let sharing = LiveSharingService.shared
         guard sharing.sharingEnabled else { return }
@@ -218,23 +220,61 @@ final class HeartRateViewModel: ObservableObject {
 
         let maxHR = profile.maxHR
         let zone = HeartRateZone(bpm: latest.bpm, maxHR: maxHR)
+        let bpm = Int(latest.bpm.rounded())
 
-        let status = LiveHeartStatus(
-            id: CloudKitConfig.liveStatusRecordName,
-            ownerID: nil,
-            currentBPM: Int(latest.bpm.rounded()),
-            zoneRaw: zone.rawValue,
-            restingBPM: summary.restingBPM.map { Int($0.rounded()) },
-            hrvMs: summary.hrvSDNN,
-            updatedAt: latest.date,
-            isElevated: Int(latest.bpm.rounded()) >= profile.elevatedThreshold,
-            elevatedThreshold: profile.elevatedThreshold,
-            displayName: profile.displayName,
-            deviceName: latest.source,
-            maxHR: Int(maxHR.rounded()),
-            note: nil
-        )
-        sharing.publish(status)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            // Emergency evaluation. Uses last 15 min of samples for "sustained" detection.
+            let recent = (try? await self.health.fetchRecentSamples(minutes: 15)) ?? self.samples
+            let thresholds = EmergencyEvaluator.Thresholds(
+                criticalHighBPM: self.profile.criticalHighBPM,
+                criticalLowBPM: self.profile.criticalLowBPM,
+                sustainedHighBPM: max(self.profile.elevatedThreshold, 120),
+                sustainedMinutes: 10
+            )
+            let emergency = EmergencyEvaluator.evaluate(
+                currentBPM: bpm,
+                recent: recent,
+                thresholds: thresholds
+            )
+
+            // Trend (hourly averages, last 24h) — refresh at most every 15 min.
+            var trend: [Int] = sharing.lastPublishedStatus?.trendHourlyBPM ?? []
+            var trendDate: Date? = sharing.lastPublishedStatus?.trendUpdatedAt
+            let trendStale: Bool = {
+                guard let trendDate else { return true }
+                return Date().timeIntervalSince(trendDate) > 15 * 60
+            }()
+            if trendStale {
+                if let fresh = try? await self.health.fetchLast24hHourlyHeartRate() {
+                    trend = fresh
+                    trendDate = Date()
+                }
+            }
+
+            let status = LiveHeartStatus(
+                id: CloudKitConfig.liveStatusRecordName,
+                ownerID: nil,
+                currentBPM: bpm,
+                zoneRaw: zone.rawValue,
+                restingBPM: self.summary.restingBPM.map { Int($0.rounded()) },
+                hrvMs: self.summary.hrvSDNN,
+                updatedAt: latest.date,
+                isElevated: bpm >= self.profile.elevatedThreshold,
+                elevatedThreshold: self.profile.elevatedThreshold,
+                displayName: self.profile.displayName,
+                deviceName: latest.source,
+                maxHR: Int(maxHR.rounded()),
+                note: nil,
+                trendHourlyBPM: trend,
+                trendUpdatedAt: trendDate,
+                isEmergency: emergency.kind != nil,
+                emergencyKind: emergency.kind,
+                emergencySince: emergency.since
+            )
+            sharing.publish(status)
+        }
     }
 
     private func refreshDaily() async throws {

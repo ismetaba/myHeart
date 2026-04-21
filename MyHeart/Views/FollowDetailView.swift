@@ -1,10 +1,13 @@
 import SwiftUI
+import Charts
+import UserNotifications
 
 /// Detail for one followed person. Auto-refreshes while visible so the live
 /// BPM stays current. Throttles to 30s refreshes to align with the writer
 /// side's publish cadence.
 struct FollowDetailView: View {
     @EnvironmentObject private var sharing: LiveSharingService
+    @EnvironmentObject private var profile: UserProfile
     @State private var current: FollowedPerson
     @State private var refreshTimer: Timer?
     @State private var showUnfollowConfirm = false
@@ -18,9 +21,12 @@ struct FollowDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if current.status.isEmergency { emergencyBanner }
                 heroCard
                 statsRow
+                if !current.status.trendHourlyBPM.isEmpty { trendCard }
                 alertsCard
+                emergencyContactCard
                 metaCard
             }
             .padding()
@@ -56,6 +62,49 @@ struct FollowDetailView: View {
         .refreshable { await refreshNow() }
     }
 
+    // MARK: Emergency banner
+
+    private var emergencyBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: current.status.emergencyKind?.systemImage ?? "exclamationmark.triangle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(current.status.emergencyKind?.label ?? "Emergency")
+                        .font(.subheadline.weight(.semibold))
+                    if let since = current.status.emergencySince {
+                        Text("Since \(since, style: .time) (\(since, style: .relative) ago)")
+                            .font(.caption2)
+                            .opacity(0.9)
+                    }
+                }
+                Spacer()
+            }
+            if profile.hasEmergencyContact {
+                Button {
+                    callEmergencyContact()
+                } label: {
+                    HStack {
+                        Image(systemName: "phone.fill")
+                        Text("Call \(profile.emergencyContactName.isEmpty ? profile.emergencyContact : profile.emergencyContactName)")
+                            .fontWeight(.semibold)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.2))
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.red))
+        .foregroundStyle(.white)
+    }
+
     // MARK: Hero
 
     private var heroCard: some View {
@@ -77,7 +126,7 @@ struct FollowDetailView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("\(current.status.currentBPM)")
                     .font(.system(size: 96, weight: .bold, design: .rounded))
-                    .foregroundStyle(current.status.isElevated ? .red : .pink)
+                    .foregroundStyle(current.status.isEmergency ? .red : (current.status.isElevated ? .orange : .pink))
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 Text("BPM")
@@ -143,6 +192,81 @@ struct FollowDetailView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemGroupedBackground)))
     }
 
+    // MARK: Trend
+
+    private var trendCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Last 24 hours", systemImage: "chart.xyaxis.line")
+                    .font(.headline)
+                Spacer()
+                if let d = current.status.trendUpdatedAt {
+                    Text("Updated \(d, style: .relative) ago")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            trendChart
+                .frame(height: 150)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    private var trendChart: some View {
+        let trend = current.status.trendHourlyBPM
+        let baseHour = Calendar.current.date(byAdding: .hour, value: -(trend.count - 1), to: Date()) ?? Date()
+        let points: [(Date, Int)] = trend.enumerated().map { idx, v in
+            (Calendar.current.date(byAdding: .hour, value: idx, to: baseHour) ?? baseHour, v)
+        }
+        return Chart {
+            ForEach(Array(points.enumerated()), id: \.offset) { _, pair in
+                if pair.1 > 0 {
+                    LineMark(
+                        x: .value("Hour", pair.0),
+                        y: .value("BPM", pair.1)
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(.pink)
+                    .lineStyle(StrokeStyle(lineWidth: 1.8))
+
+                    AreaMark(
+                        x: .value("Hour", pair.0),
+                        y: .value("BPM", pair.1)
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(LinearGradient(
+                        colors: [.pink.opacity(0.35), .pink.opacity(0)],
+                        startPoint: .top, endPoint: .bottom
+                    ))
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                    .foregroundStyle(.gray.opacity(0.3))
+                AxisValueLabel {
+                    if let v = value.as(Int.self) {
+                        Text("\(v)").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .hour, count: 6)) { value in
+                AxisValueLabel {
+                    if let d = value.as(Date.self) {
+                        Text(d, format: .dateTime.hour())
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: Alerts
 
     private var alertsCard: some View {
@@ -158,7 +282,7 @@ struct FollowDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Notify me if BPM ≥ \(alertThreshold)")
                         .font(.subheadline.weight(.medium))
-                    Text("Alerts only fire while MyHeart is running. Apple Watch wearers get push notifications.")
+                    Text("Alerts fire even when MyHeart is closed, via silent CloudKit push and a background refresh every ~15 min.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -167,6 +291,44 @@ struct FollowDetailView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    // MARK: Emergency contact
+
+    @ViewBuilder
+    private var emergencyContactCard: some View {
+        if profile.hasEmergencyContact {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("Emergency Contact", systemImage: "phone.fill")
+                        .font(.headline)
+                        .foregroundStyle(.red)
+                    Spacer()
+                }
+                Button {
+                    callEmergencyContact()
+                } label: {
+                    HStack {
+                        Image(systemName: "phone.fill")
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(profile.emergencyContactName.isEmpty ? "Call Emergency Contact" : profile.emergencyContactName)
+                                .fontWeight(.semibold)
+                            Text(profile.emergencyContact)
+                                .font(.caption2)
+                                .opacity(0.9)
+                        }
+                        Spacer()
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.red))
+                    .foregroundStyle(.white)
+                }
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+        }
     }
 
     // MARK: Meta
@@ -199,6 +361,16 @@ struct FollowDetailView: View {
         }
     }
 
+    // MARK: Actions
+
+    private func callEmergencyContact() {
+        let digits = profile.emergencyContact.filter { "+0123456789".contains($0) }
+        guard !digits.isEmpty,
+              let url = URL(string: "tel://\(digits)"),
+              UIApplication.shared.canOpenURL(url) else { return }
+        UIApplication.shared.open(url)
+    }
+
     // MARK: Refresh
 
     private func startAutoRefresh() {
@@ -206,7 +378,6 @@ struct FollowDetailView: View {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
             Task { await refreshNow() }
         }
-        // Immediate refresh
         Task { await refreshNow() }
     }
 
@@ -218,34 +389,6 @@ struct FollowDetailView: View {
     private func refreshNow() async {
         if let updated = await sharing.refreshFollowed(person: current) {
             withAnimation { current = updated }
-            maybeTriggerAlert(for: updated)
         }
     }
-
-    private func maybeTriggerAlert(for person: FollowedPerson) {
-        guard person.status.currentBPM >= alertThreshold else { return }
-        let key = "lastAlert.\(person.id)"
-        let last = UserDefaults.standard.double(forKey: key)
-        let now = Date().timeIntervalSince1970
-        if now - last < 600 { return }  // rate-limit local alerts to 10 minutes
-        UserDefaults.standard.set(now, forKey: key)
-        fireLocalNotification(for: person)
-    }
-
-    private func fireLocalNotification(for person: FollowedPerson) {
-        let content = UNMutableNotificationContent()
-        content.title = "\(person.status.displayName) — elevated heart rate"
-        content.body = "Currently \(person.status.currentBPM) BPM (threshold \(alertThreshold))"
-        content.sound = .default
-        let req = UNNotificationRequest(
-            identifier: "followed.\(person.id).\(Int(Date().timeIntervalSince1970))",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(req)
-    }
 }
-
-// MARK: - Notifications import
-
-import UserNotifications

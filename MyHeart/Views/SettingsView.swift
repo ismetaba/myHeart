@@ -12,6 +12,7 @@ struct SettingsView: View {
             Form {
                 profileSection
                 sharingSection
+                emergencySection
                 zonesSection
                 thresholdsSection
                 healthSection
@@ -19,6 +20,37 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .onAppear(perform: syncLocalState)
+        }
+    }
+
+    private var emergencySection: some View {
+        Section {
+            Stepper(value: $profile.criticalHighBPM, in: 120...220, step: 5) {
+                LabeledRow(label: "Critical High", value: "\(profile.criticalHighBPM) bpm")
+            }
+            Stepper(value: $profile.criticalLowBPM, in: 30...60, step: 2) {
+                LabeledRow(label: "Critical Low", value: "\(profile.criticalLowBPM) bpm")
+            }
+
+            HStack {
+                Text("Contact Name")
+                Spacer()
+                TextField("Optional", text: $profile.emergencyContactName)
+                    .multilineTextAlignment(.trailing)
+                    .textContentType(.name)
+            }
+            HStack {
+                Text("Phone")
+                Spacer()
+                TextField("+1 555 555 5555", text: $profile.emergencyContact)
+                    .multilineTextAlignment(.trailing)
+                    .textContentType(.telephoneNumber)
+                    .keyboardType(.phonePad)
+            }
+        } header: {
+            Text("Emergency")
+        } footer: {
+            Text("When your heart rate crosses a critical threshold (or stays above the sustained threshold for 10+ minutes) family members get a time-sensitive alert that breaks through Focus modes. If a phone is set, watchers see a one-tap Call button on your profile.")
         }
     }
 

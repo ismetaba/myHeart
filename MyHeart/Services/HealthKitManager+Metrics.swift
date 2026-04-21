@@ -260,6 +260,53 @@ extension HealthKitManager {
         )
     }
 
+    // MARK: - Last-24h hourly heart-rate averages (for trend sharing)
+
+    /// 24 values, oldest → newest. 0 means "no data that hour".
+    func fetchLast24hHourlyHeartRate(calendar: Calendar = .current) async throws -> [Int] {
+        let now = Date()
+        let anchor = calendar.date(byAdding: .hour, value: -23, to: now) ?? now
+        let start = anchor
+        let end = now
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+
+        let collection: HKStatisticsCollection = try await withCheckedThrowingContinuation { cont in
+            let query = HKStatisticsCollectionQuery(
+                quantityType: HKQuantityType.quantityType(forIdentifier: .heartRate)!,
+                quantitySamplePredicate: predicate,
+                options: .discreteAverage,
+                anchorDate: anchor,
+                intervalComponents: DateComponents(hour: 1)
+            )
+            query.initialResultsHandler = { _, collection, error in
+                if let error { cont.resume(throwing: error); return }
+                if let collection { cont.resume(returning: collection) }
+                else { cont.resume(throwing: HealthKitError.typeUnavailable) }
+            }
+            store.execute(query)
+        }
+
+        let unit = HKUnit.count().unitDivided(by: .minute())
+        var result: [Int] = []
+        collection.enumerateStatistics(from: start, to: end) { stat, _ in
+            let v = stat.averageQuantity()?.doubleValue(for: unit) ?? 0
+            result.append(Int(v.rounded()))
+        }
+        // Pad to 24 entries if the range was shorter than expected
+        while result.count < 24 { result.insert(0, at: 0) }
+        return Array(result.suffix(24))
+    }
+
+    // MARK: - Recent samples for sustained-emergency detection
+
+    /// Fetches samples from the last `minutes`. Used by the emergency evaluator
+    /// to decide whether an elevated BPM has been sustained.
+    func fetchRecentSamples(minutes: Int = 15) async throws -> [HeartRateSample] {
+        let end = Date()
+        let start = end.addingTimeInterval(-Double(minutes) * 60)
+        return try await fetchHeartRateSamples(start: start, end: end, limit: HealthKitManager.noSampleLimit)
+    }
+
     // MARK: - Mindfulness
 
     func fetchTodayMindfulMinutes(calendar: Calendar = .current) async throws -> Double {

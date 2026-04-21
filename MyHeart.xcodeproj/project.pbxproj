@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0681D6A501F040EEF0FCDE66 /* EmergencyEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A97992B701B59C5992CAC028 /* EmergencyEvaluator.swift */; };
 		0C01AE04EA12FB9414E97A0B /* CloudSharingSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFA095357484F874B048E9B5 /* CloudSharingSheet.swift */; };
 		0E581B4463CCB7BAB783741F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BD2AC7001B6FBA86473019 /* ContentView.swift */; };
 		151CCE2A61928A0B23BAE6E2 /* PDFExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D7487AAD9F09504367E62C4 /* PDFExporter.swift */; };
@@ -28,6 +29,7 @@
 		D51112F540222248BE8E9152 /* UserProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */; };
 		DA354EE6A341379C71867A05 /* Derived.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0091DC43FE0E0E93899E3EA8 /* Derived.swift */; };
 		DEA9DA3941AB1347ABCE0B09 /* HeartRateViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AEC925BC1C7A0A933DB736 /* HeartRateViewModel.swift */; };
+		EC148D3357E90B01F5749D8D /* LiveSharingService+Subscriptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56E33C8268D41C24A776B1C /* LiveSharingService+Subscriptions.swift */; };
 		ECE69C598ED09637EC29A5C4 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */; };
 		EFC6F30DFDF9D43C26C417F6 /* FollowDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C275A16B553CBE74E9547BDE /* FollowDetailView.swift */; };
 		F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */; };
@@ -56,9 +58,11 @@
 		7D7487AAD9F09504367E62C4 /* PDFExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExporter.swift; sourceTree = "<group>"; };
 		82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthKitManager+Metrics.swift"; sourceTree = "<group>"; };
 		93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
-		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A97992B701B59C5992CAC028 /* EmergencyEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmergencyEvaluator.swift; sourceTree = "<group>"; };
+		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		C275A16B553CBE74E9547BDE /* FollowDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowDetailView.swift; sourceTree = "<group>"; };
+		C56E33C8268D41C24A776B1C /* LiveSharingService+Subscriptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LiveSharingService+Subscriptions.swift"; sourceTree = "<group>"; };
 		CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
 		D797B8F15203753B7589BB18 /* HealthOverviewViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthOverviewViewModel.swift; sourceTree = "<group>"; };
 		DFA095357484F874B048E9B5 /* CloudSharingSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSharingSheet.swift; sourceTree = "<group>"; };
@@ -114,9 +118,11 @@
 		64F656109EFC8877B222FFE4 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				A97992B701B59C5992CAC028 /* EmergencyEvaluator.swift */,
 				49DDE11F44AF984F62837BAC /* HealthKitManager.swift */,
 				82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */,
 				4A8D1AA2094D159CEBF63C0F /* LiveSharingService.swift */,
+				C56E33C8268D41C24A776B1C /* LiveSharingService+Subscriptions.swift */,
 				1DB94CF65C64D810A564491E /* LiveSharingService+Watcher.swift */,
 				7D7487AAD9F09504367E62C4 /* PDFExporter.swift */,
 				E626A653617AE06A51AA1168 /* SharingError.swift */,
@@ -202,6 +208,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					7B7E6561DC9CBA9EF7E7EBB3 = {
+						DevelopmentTeam = "";
+					};
+				};
 			};
 			buildConfigurationList = 4A955A0E2908D4AAE583A395 /* Build configuration list for PBXProject "MyHeart" */;
 			developmentRegion = en;
@@ -245,6 +256,7 @@
 				F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */,
 				DA354EE6A341379C71867A05 /* Derived.swift in Sources */,
 				745537CBA31A7516608B97D2 /* DetailViews.swift in Sources */,
+				0681D6A501F040EEF0FCDE66 /* EmergencyEvaluator.swift in Sources */,
 				6D4DA7D56ACAB856B32DA07B /* FamilyView.swift in Sources */,
 				EFC6F30DFDF9D43C26C417F6 /* FollowDetailView.swift in Sources */,
 				92CB4075276F52628F8BA82D /* HealthKitManager+Metrics.swift in Sources */,
@@ -256,6 +268,7 @@
 				2EE616411365331510495D2B /* HeartRateZone.swift in Sources */,
 				BDD99AB21DA0F5EB0669E033 /* HistoryView.swift in Sources */,
 				1815DBC933830CB920F7A143 /* LiveHeartShare.swift in Sources */,
+				EC148D3357E90B01F5749D8D /* LiveSharingService+Subscriptions.swift in Sources */,
 				70ECFD9C635CBEF5C6BCE960 /* LiveSharingService+Watcher.swift in Sources */,
 				BF818DA351E4AD2DC02B5CF3 /* LiveSharingService.swift in Sources */,
 				FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */,
@@ -345,7 +358,6 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
-				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;
@@ -427,7 +439,6 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
-				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;

@@ -13,6 +13,10 @@ final class UserProfile: ObservableObject {
     @AppStorage("profile.maxHROverride") private var storedMaxHROverride: Int = 0
     @AppStorage("profile.elevatedThreshold") private var storedElevatedThreshold: Int = 100
     @AppStorage("profile.displayName") private var storedDisplayName: String = ""
+    @AppStorage("profile.criticalHighBPM") private var storedCriticalHighBPM: Int = 160
+    @AppStorage("profile.criticalLowBPM") private var storedCriticalLowBPM: Int = 40
+    @AppStorage("profile.emergencyContact") private var storedEmergencyContact: String = ""
+    @AppStorage("profile.emergencyContactName") private var storedEmergencyContactName: String = ""
 
     @Published var age: Int {
         didSet { storedAge = age }
@@ -33,6 +37,25 @@ final class UserProfile: ObservableObject {
         didSet { storedDisplayName = displayName }
     }
 
+    /// BPM that triggers an acute "critical high" emergency flag on shared records.
+    @Published var criticalHighBPM: Int {
+        didSet { storedCriticalHighBPM = criticalHighBPM }
+    }
+
+    /// BPM below which a "critical low" emergency flag is set on shared records.
+    @Published var criticalLowBPM: Int {
+        didSet { storedCriticalLowBPM = criticalLowBPM }
+    }
+
+    /// Phone number followers / the user can quick-dial in an emergency.
+    @Published var emergencyContact: String {
+        didSet { storedEmergencyContact = emergencyContact }
+    }
+
+    @Published var emergencyContactName: String {
+        didSet { storedEmergencyContactName = emergencyContactName }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         self.age = defaults.integer(forKey: "profile.age") == 0 ? 30 : defaults.integer(forKey: "profile.age")
@@ -41,6 +64,16 @@ final class UserProfile: ObservableObject {
         self.elevatedThreshold = stored == 0 ? 100 : stored
         let storedName = defaults.string(forKey: "profile.displayName") ?? ""
         self.displayName = storedName.isEmpty ? UIDevice.current.name : storedName
+        let high = defaults.integer(forKey: "profile.criticalHighBPM")
+        self.criticalHighBPM = high == 0 ? 160 : high
+        let low = defaults.integer(forKey: "profile.criticalLowBPM")
+        self.criticalLowBPM = low == 0 ? 40 : low
+        self.emergencyContact = defaults.string(forKey: "profile.emergencyContact") ?? ""
+        self.emergencyContactName = defaults.string(forKey: "profile.emergencyContactName") ?? ""
+    }
+
+    var hasEmergencyContact: Bool {
+        !emergencyContact.isEmpty
     }
 
     /// Max heart rate used for zone computation.
