@@ -454,12 +454,64 @@ struct FamilyView: View {
 
     // MARK: Following section
 
+    @State private var pastedLink: String = ""
+    @State private var showPasteField: Bool = false
+
     private var followingSection: some View {
         SectionCard(title: "Following", icon: "person.2.fill") {
             if sharing.followed.isEmpty {
-                Text("When someone shares their heart with you, they'll appear here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("When someone shares their heart with you, tap their invite link — you'll show up here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if !showPasteField {
+                        Button {
+                            withAnimation { showPasteField = true }
+                            if let pasted = UIPasteboard.general.string,
+                               pasted.lowercased().contains("icloud.com/share") {
+                                pastedLink = pasted
+                            }
+                        } label: {
+                            Label("Paste Invite Link", systemImage: "link")
+                                .font(.caption.weight(.medium))
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.pink.opacity(0.15)))
+                                .foregroundStyle(.pink)
+                        }
+                    } else {
+                        VStack(spacing: 8) {
+                            HStack {
+                                TextField("https://www.icloud.com/share/…", text: $pastedLink)
+                                    .textFieldStyle(.roundedBorder)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.URL)
+                                    .textInputAutocapitalization(.never)
+                                Button("Paste") {
+                                    pastedLink = UIPasteboard.general.string ?? pastedLink
+                                }
+                                .font(.caption)
+                            }
+                            Button {
+                                guard let url = URL(string: pastedLink.trimmingCharacters(in: .whitespaces)) else { return }
+                                Task {
+                                    await sharing.acceptByURL(url)
+                                    pastedLink = ""
+                                    showPasteField = false
+                                }
+                            } label: {
+                                Text("Follow")
+                                    .fontWeight(.semibold)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.pink))
+                                    .foregroundStyle(.white)
+                            }
+                            .disabled(URL(string: pastedLink.trimmingCharacters(in: .whitespaces)) == nil)
+                        }
+                    }
+                }
             } else {
                 VStack(spacing: 10) {
                     ForEach(sharing.followed) { person in
