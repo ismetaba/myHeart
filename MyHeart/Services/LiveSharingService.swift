@@ -90,6 +90,12 @@ final class LiveSharingService: ObservableObject {
 
     // MARK: - Sharing state
 
+    /// Public entry for re-reading sharing state after an external change
+    /// (e.g. the UICloudSharingController added/removed a participant).
+    func loadSharingStatePublic() async {
+        await loadSharingState()
+    }
+
     /// Whether we already have a live-status record + active share.
     private func loadSharingState() async {
         do {
@@ -119,17 +125,22 @@ final class LiveSharingService: ObservableObject {
 
     // MARK: - Enable / share creation
 
-    /// Creates the live-status record + a CKShare if needed, and returns the
-    /// record + share so the caller can present `UICloudSharingController`.
-    func prepareShare(from status: LiveHeartStatus) async throws -> (CKRecord, CKShare) {
+    /// Called from inside `UICloudSharingController`'s preparation handler.
+    /// Returns the CKShare + container that the controller should present
+    /// the invite sheet for, after synchronously saving root record + share
+    /// together in a single atomic operation. (CloudKit requires that a
+    /// new share and its root record be saved together — otherwise it
+    /// throws "An added share is being saved without its rootRecord".)
+    func prepareShareForSheet(from status: LiveHeartStatus) async throws -> (CKShare, CKContainer) {
         guard accountStatus == .available else { throw SharingError.notSignedIn }
         isWorking = true
         defer { isWorking = false }
 
-        // Ensure zone
         await ensureZoneExists()
 
-        // Fetch-or-create the record
+        // Fetch-or-create the root record. We always save a fresh set of fields
+        // so the record *is* modified inside the save operation — avoids any
+        // CloudKit optimizer deciding to skip the record write.
         let record: CKRecord
         do {
             record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
@@ -142,36 +153,44 @@ final class LiveSharingService: ObservableObject {
             status.apply(to: record)
         }
 
-        // Check for existing share
-        if let existing = try await fetchShare(for: record) {
-            return (record, existing)
+        // If a share already exists for this record, reuse it — don't try to
+        // create a second share (that's a CKError).
+        if let existingShareRef = record.share,
+           let existingShare = try? await privateDB.record(for: existingShareRef.recordID) as? CKShare {
+            self.sharingEnabled = true
+            self.currentShareURL = existingShare.url
+            self.lastPublishedStatus = status
+            return (existingShare, container)
         }
 
-        // Create a new share
+        // New share. CKShare(rootRecord:) sets record.share → share for us;
+        // we save both in one CKModifyRecordsOperation.
         let share = CKShare(rootRecord: record)
         share[CKShare.SystemFieldKey.title] = "\(status.displayName)'s Heart Rate" as CKRecordValue
         share[CKShare.SystemFieldKey.shareType] = "com.myheart.LiveHeartShare" as CKRecordValue
         share.publicPermission = .none   // only invited participants
 
         let saveOp = CKModifyRecordsOperation(recordsToSave: [record, share], recordIDsToDelete: nil)
-        saveOp.savePolicy = .ifServerRecordUnchanged
-        return try await withCheckedThrowingContinuation { cont in
-            saveOp.modifyRecordsResultBlock = { [weak self] result in
-                Task { @MainActor in
-                    guard let self else { return }
-                    switch result {
-                    case .success:
-                        self.sharingEnabled = true
-                        self.currentShareURL = share.url
-                        self.lastPublishedStatus = status
-                        cont.resume(returning: (record, share))
-                    case .failure(let error):
-                        cont.resume(throwing: SharingError.wrap(error))
-                    }
+        // `.allKeys` forces a write even when the local change tag matches the
+        // server — CloudKit occasionally wants the root record present in the
+        // same op as a new share, and this avoids any short-circuit skipping it.
+        saveOp.savePolicy = .allKeys
+        saveOp.qualityOfService = .userInitiated
+
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            saveOp.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success:       cont.resume()
+                case .failure(let e): cont.resume(throwing: SharingError.wrap(e))
                 }
             }
             privateDB.add(saveOp)
         }
+
+        self.sharingEnabled = true
+        self.currentShareURL = share.url
+        self.lastPublishedStatus = status
+        return (share, container)
     }
 
     // MARK: - Stop sharing

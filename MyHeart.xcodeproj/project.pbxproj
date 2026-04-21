@@ -59,7 +59,7 @@
 		82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthKitManager+Metrics.swift"; sourceTree = "<group>"; };
 		93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		A97992B701B59C5992CAC028 /* EmergencyEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmergencyEvaluator.swift; sourceTree = "<group>"; };
-		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		C275A16B553CBE74E9547BDE /* FollowDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowDetailView.swift; sourceTree = "<group>"; };
 		C56E33C8268D41C24A776B1C /* LiveSharingService+Subscriptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LiveSharingService+Subscriptions.swift"; sourceTree = "<group>"; };
@@ -208,11 +208,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-					7B7E6561DC9CBA9EF7E7EBB3 = {
-						DevelopmentTeam = "";
-					};
-				};
 			};
 			buildConfigurationList = 4A955A0E2908D4AAE583A395 /* Build configuration list for PBXProject "MyHeart" */;
 			developmentRegion = en;
@@ -358,6 +353,7 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
+				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;
@@ -439,6 +435,7 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
+				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;

@@ -2,16 +2,40 @@ import SwiftUI
 import CloudKit
 import UIKit
 
-/// Wraps `UICloudSharingController` so it can be presented from SwiftUI.
-/// The controller handles the entire invite UX — messages/mail/link/copy —
-/// consistent with every other Apple app that uses CKShare.
+/// SwiftUI wrapper around `UICloudSharingController`.
+///
+/// Uses the **preparation-handler** initializer (Apple's recommended path)
+/// instead of `init(share:container:)`. The controller calls our prep
+/// handler at the right lifecycle moment and we atomically save the root
+/// record + CKShare together — avoiding the classic CloudKit error:
+///
+///   "An added share is being saved without its rootRecord being saved in
+///   the same operation."
+///
+/// …and the follow-on:
+///
+///   "You cannot get the URL of a share until it's been saved to the server."
 struct CloudSharingSheet: UIViewControllerRepresentable {
-    let share: CKShare
-    let container: CKContainer
+    /// Async preparation. Runs when the controller is about to present.
+    /// Returns the saved CKShare + its CKContainer.
+    let prepare: () async throws -> (CKShare, CKContainer)
     var onEnd: () -> Void = {}
 
     func makeUIViewController(context: Context) -> UICloudSharingController {
-        let controller = UICloudSharingController(share: share, container: container)
+        let controller = UICloudSharingController { (controller, completion: @escaping (CKShare?, CKContainer?, Error?) -> Void) in
+            Task {
+                do {
+                    let (share, container) = try await prepare()
+                    await MainActor.run {
+                        completion(share, container, nil)
+                    }
+                } catch {
+                    await MainActor.run {
+                        completion(nil, nil, error)
+                    }
+                }
+            }
+        }
         controller.availablePermissions = [.allowReadOnly, .allowPrivate]
         controller.delegate = context.coordinator
         return controller
@@ -26,7 +50,6 @@ struct CloudSharingSheet: UIViewControllerRepresentable {
         init(onEnd: @escaping () -> Void) { self.onEnd = onEnd }
 
         func cloudSharingController(_ csc: UICloudSharingController, failedToSaveShareWithError error: Error) {
-            // The controller shows its own alert; we just log.
             print("CloudSharing save failed: \(error.localizedDescription)")
         }
 
@@ -42,7 +65,10 @@ struct CloudSharingSheet: UIViewControllerRepresentable {
         }
 
         func cloudSharingControllerDidSaveShare(_ csc: UICloudSharingController) {
-            onEnd()
+            Task { @MainActor in
+                await LiveSharingService.shared.loadSharingStatePublic()
+                onEnd()
+            }
         }
     }
 }

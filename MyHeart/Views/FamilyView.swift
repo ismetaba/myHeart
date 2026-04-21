@@ -50,10 +50,12 @@ struct FamilyView: View {
                 await sharing.refreshFollowed()
             }
         }
-        .sheet(item: $shareSheet) { state in
+        .sheet(item: $shareSheet) { _ in
             CloudSharingSheet(
-                share: state.share,
-                container: state.container,
+                prepare: {
+                    let status = sharing.lastPublishedStatus ?? currentStatusOrPlaceholder()
+                    return try await sharing.prepareShareForSheet(from: status)
+                },
                 onEnd: { shareSheet = nil }
             )
         }
@@ -207,7 +209,7 @@ struct FamilyView: View {
                 .foregroundStyle(.secondary)
 
             Button {
-                Task { await beginSharing() }
+                presentShareSheet()
             } label: {
                 HStack {
                     Image(systemName: "heart.fill")
@@ -268,7 +270,7 @@ struct FamilyView: View {
 
             HStack(spacing: 10) {
                 Button {
-                    Task { await presentShareSheet() }
+                    presentShareSheet()
                 } label: {
                     Label("Invite", systemImage: "person.crop.circle.badge.plus")
                         .frame(maxWidth: .infinity)
@@ -370,30 +372,11 @@ struct FamilyView: View {
 
     // MARK: Actions
 
-    private func beginSharing() async {
-        let status = currentStatusOrPlaceholder()
-        do {
-            let (_, share) = try await sharing.prepareShare(from: status)
-            shareSheet = ShareSheetState(
-                share: share,
-                container: CKContainer(identifier: CloudKitConfig.containerIdentifier)
-            )
-        } catch {
-            // Error is surfaced via sharing.lastPublishError
-        }
-    }
-
-    private func presentShareSheet() async {
-        let status = sharing.lastPublishedStatus ?? currentStatusOrPlaceholder()
-        do {
-            let (_, share) = try await sharing.prepareShare(from: status)
-            shareSheet = ShareSheetState(
-                share: share,
-                container: CKContainer(identifier: CloudKitConfig.containerIdentifier)
-            )
-        } catch {
-            // surfaced via error banner
-        }
+    /// Both "Start Live Sharing" and "Invite" now just open the share sheet.
+    /// The actual save-record-plus-share happens inside the
+    /// UICloudSharingController prep handler via prepareShareForSheet.
+    private func presentShareSheet() {
+        shareSheet = ShareSheetState()
     }
 
     private func currentStatusOrPlaceholder() -> LiveHeartStatus {
@@ -491,10 +474,10 @@ private struct FollowedRow: View {
     }
 }
 
+/// Identified struct purely so `.sheet(item:)` triggers presentation.
+/// The actual share is fetched inside the sheet's prepare handler.
 private struct ShareSheetState: Identifiable {
     let id = UUID()
-    let share: CKShare
-    let container: CKContainer
 }
 
 #Preview {
