@@ -184,18 +184,115 @@ struct FamilyView: View {
 
     private var sharingSection: some View {
         SectionCard(title: "Sharing My Heart", icon: "antenna.radiowaves.left.and.right") {
-            if sharing.sharingEnabled {
+            if isQuotaError {
+                quotaErrorCard
+            } else if sharing.sharingEnabled {
                 activeSharingView
             } else {
                 inactiveSharingView
             }
-            if let error = sharing.lastPublishError, !error.isEmpty {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .padding(.top, 2)
+            if !isQuotaError, let error = sharing.lastPublishError, !error.isEmpty {
+                errorBanner(error)
             }
         }
+    }
+
+    private var isQuotaError: Bool {
+        guard let err = sharing.lastPublishError?.lowercased() else { return false }
+        return err.contains("icloud storage is full")
+            || err.contains("quota exceeded")
+            || err.contains("your icloud storage")
+    }
+
+    private var quotaErrorCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "icloud.slash.fill")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("iCloud Storage is Full")
+                        .font(.headline)
+                    Text("Can't publish your heart rate until you free up space.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Text("MyHeart uses only a few kilobytes for live sharing — your iCloud account itself is out of space, usually from Photos or device Backups.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                stepRow("1", "Open Settings on your iPhone.")
+                stepRow("2", "Tap your name at the top → iCloud.")
+                stepRow("3", "Tap Manage Account Storage and delete what you don't need, or upgrade your plan.")
+                stepRow("4", "Come back here and tap Retry.")
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    Label("Open Settings", systemImage: "gearshape")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange))
+                        .foregroundStyle(.white)
+                }
+
+                Button {
+                    sharing.lastPublishError = nil
+                    Task { await enableSharing() }
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.18)))
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.12)))
+    }
+
+    @ViewBuilder
+    private func stepRow(_ number: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            ZStack {
+                Circle().fill(Color.orange.opacity(0.22))
+                Text(number)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.orange)
+            }
+            .frame(width: 18, height: 18)
+            Text(text)
+                .font(.caption)
+        }
+    }
+
+    private func errorBanner(_ error: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Spacer()
+            Button("Dismiss") {
+                sharing.lastPublishError = nil
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
     }
 
     private var inactiveSharingView: some View {
