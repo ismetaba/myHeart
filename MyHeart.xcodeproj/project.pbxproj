@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		0681D6A501F040EEF0FCDE66 /* EmergencyEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A97992B701B59C5992CAC028 /* EmergencyEvaluator.swift */; };
-		0C01AE04EA12FB9414E97A0B /* CloudSharingSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFA095357484F874B048E9B5 /* CloudSharingSheet.swift */; };
 		0E581B4463CCB7BAB783741F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BD2AC7001B6FBA86473019 /* ContentView.swift */; };
 		151CCE2A61928A0B23BAE6E2 /* PDFExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D7487AAD9F09504367E62C4 /* PDFExporter.swift */; };
 		1815DBC933830CB920F7A143 /* LiveHeartShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = 299ED6423390E3D18E70D6B1 /* LiveHeartShare.swift */; };
@@ -59,13 +58,12 @@
 		82C73358CA72381778B29994 /* HealthKitManager+Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthKitManager+Metrics.swift"; sourceTree = "<group>"; };
 		93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		A97992B701B59C5992CAC028 /* EmergencyEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmergencyEvaluator.swift; sourceTree = "<group>"; };
-		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AE603005EFEA12A449210991 /* MyHeart.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MyHeart.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC1A83989B7C45A9BB9BC92A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		C275A16B553CBE74E9547BDE /* FollowDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowDetailView.swift; sourceTree = "<group>"; };
 		C56E33C8268D41C24A776B1C /* LiveSharingService+Subscriptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LiveSharingService+Subscriptions.swift"; sourceTree = "<group>"; };
 		CEEA78DE0584EBDE44F7C427 /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
 		D797B8F15203753B7589BB18 /* HealthOverviewViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthOverviewViewModel.swift; sourceTree = "<group>"; };
-		DFA095357484F874B048E9B5 /* CloudSharingSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSharingSheet.swift; sourceTree = "<group>"; };
 		E1273F90FA76C09A2D812D0A /* DetailViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailViews.swift; sourceTree = "<group>"; };
 		E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyHeartApp.swift; sourceTree = "<group>"; };
 		E369644295D6CE6002655054 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -141,7 +139,6 @@
 		C0B042A7239C6FE73BE973C5 /* Views */ = {
 			isa = PBXGroup;
 			children = (
-				DFA095357484F874B048E9B5 /* CloudSharingSheet.swift */,
 				93A5DAB4DFC8F84FBEB97A2C /* DashboardView.swift */,
 				E1273F90FA76C09A2D812D0A /* DetailViews.swift */,
 				08F4A253B07EF9723E25525F /* FamilyView.swift */,
@@ -208,6 +205,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					7B7E6561DC9CBA9EF7E7EBB3 = {
+						DevelopmentTeam = "";
+					};
+				};
 			};
 			buildConfigurationList = 4A955A0E2908D4AAE583A395 /* Build configuration list for PBXProject "MyHeart" */;
 			developmentRegion = en;
@@ -246,7 +248,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				4368606CA635602B808B85E7 /* AppDelegate.swift in Sources */,
-				0C01AE04EA12FB9414E97A0B /* CloudSharingSheet.swift in Sources */,
 				0E581B4463CCB7BAB783741F /* ContentView.swift in Sources */,
 				F108B1A5ED1C18E57C477CD8 /* DashboardView.swift in Sources */,
 				DA354EE6A341379C71867A05 /* Derived.swift in Sources */,
@@ -353,7 +354,6 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
-				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;
@@ -435,7 +435,6 @@
 				CODE_SIGN_ENTITLEMENTS = MyHeart/MyHeart.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_ASSET_PATHS = "\"MyHeart/Resources/Preview Content\"";
-				DEVELOPMENT_TEAM = HJ9ZP4QLTL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MyHeart/Info.plist;

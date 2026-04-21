@@ -1,17 +1,24 @@
 import SwiftUI
 import CloudKit
+import UIKit
 
 /// The "Family" tab. Houses both perspectives of live sharing:
 /// 1) "Sharing My Heart" — manage my outbound share (enable, invite, stop).
 /// 2) "Following" — live status of people who shared with me.
+///
+/// Uses SwiftUI's native `ShareLink` against the CloudKit share URL, instead of
+/// wrapping `UICloudSharingController`. The controller doesn't always render
+/// correctly inside a SwiftUI sheet (appears blank), and we only need to hand
+/// off a short iCloud invite URL — which the standard share sheet handles
+/// perfectly via iMessage / Mail / AirDrop / Copy.
 struct FamilyView: View {
     @EnvironmentObject private var sharing: LiveSharingService
     @EnvironmentObject private var heartVM: HeartRateViewModel
     @EnvironmentObject private var profile: UserProfile
 
-    @State private var shareSheet: ShareSheetState?
     @State private var showStopConfirm = false
     @State private var infoExpanded = false
+    @State private var copiedLink = false
 
     var body: some View {
         NavigationStack {
@@ -50,24 +57,13 @@ struct FamilyView: View {
                 await sharing.refreshFollowed()
             }
         }
-        .sheet(item: $shareSheet) { _ in
-            CloudSharingSheet(
-                prepare: {
-                    let status = sharing.lastPublishedStatus ?? currentStatusOrPlaceholder()
-                    return try await sharing.prepareShareForSheet(from: status)
-                },
-                onEnd: { shareSheet = nil }
-            )
-        }
         .confirmationDialog(
             "Stop sharing your heart rate?",
             isPresented: $showStopConfirm,
             titleVisibility: .visible
         ) {
             Button("Stop Sharing", role: .destructive) {
-                Task {
-                    try? await sharing.stopSharing()
-                }
+                Task { try? await sharing.stopSharing() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -209,7 +205,7 @@ struct FamilyView: View {
                 .foregroundStyle(.secondary)
 
             Button {
-                presentShareSheet()
+                Task { await enableSharing() }
             } label: {
                 HStack {
                     Image(systemName: "heart.fill")
@@ -234,61 +230,117 @@ struct FamilyView: View {
                     .fill(.green)
                     .frame(width: 10, height: 10)
                     .overlay(Circle().stroke(Color.green.opacity(0.35), lineWidth: 4).scaleEffect(1.6))
-                Text("Live — \(sharing.participantCount) \(sharing.participantCount == 1 ? "person" : "people") can see your heart")
+                Text(liveStatusText)
                     .font(.subheadline.weight(.medium))
                 Spacer()
             }
 
             if let status = sharing.lastPublishedStatus {
-                VStack(spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("\(status.currentBPM)")
-                            .font(.system(size: 48, weight: .bold, design: .rounded))
-                            .foregroundStyle(.pink)
-                            .monospacedDigit()
-                        Text("BPM")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        zoneChip(status.zone)
-                    }
-                    HStack {
-                        Text("Last sent \(status.updatedAt, style: .relative) ago")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        if status.isStale {
-                            Label("Stale", systemImage: "clock.arrow.circlepath")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
-                    }
+                livePreview(status: status)
+            }
+
+            if let url = sharing.currentShareURL {
+                shareLinkBlock(url: url)
+            } else {
+                Text("Preparing invite link…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button(role: .destructive) {
+                showStopConfirm = true
+            } label: {
+                Label("Stop Sharing", systemImage: "xmark.circle.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.15)))
+                    .foregroundStyle(.primary)
+            }
+        }
+    }
+
+    private var liveStatusText: String {
+        if sharing.participantCount == 0 {
+            return "Live — share the link below to invite"
+        }
+        return "Live — \(sharing.participantCount) \(sharing.participantCount == 1 ? "person is" : "people are") following"
+    }
+
+    private func livePreview(status: LiveHeartStatus) -> some View {
+        VStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("\(status.currentBPM)")
+                    .font(.system(size: 42, weight: .bold, design: .rounded))
+                    .foregroundStyle(.pink)
+                    .monospacedDigit()
+                Text("BPM")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                zoneChip(status.zone)
+            }
+            HStack {
+                Text("Last sent \(status.updatedAt, style: .relative) ago")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if status.isStale {
+                    Label("Stale", systemImage: "clock.arrow.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
                 }
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.tertiarySystemGroupedBackground)))
+    }
+
+    @ViewBuilder
+    private func shareLinkBlock(url: URL) -> some View {
+        VStack(spacing: 8) {
+            ShareLink(
+                item: url,
+                subject: Text("\(profile.displayName)'s Heart Rate"),
+                message: Text("Follow \(profile.displayName)'s live heart rate in MyHeart")
+            ) {
+                HStack {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                    Text("Invite via Messages, Mail, AirDrop…")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .foregroundStyle(.white)
                 .padding()
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(.tertiarySystemGroupedBackground)))
+                .frame(maxWidth: .infinity)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.pink))
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    presentShareSheet()
-                } label: {
-                    Label("Invite", systemImage: "person.crop.circle.badge.plus")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.pink.opacity(0.18)))
-                        .foregroundStyle(.pink)
+            Button {
+                UIPasteboard.general.string = url.absoluteString
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                copiedLink = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copiedLink = false }
+            } label: {
+                HStack {
+                    Image(systemName: copiedLink ? "checkmark.circle.fill" : "link")
+                    Text(copiedLink ? "Copied!" : "Copy Link")
+                        .fontWeight(.medium)
+                    Spacer()
                 }
-
-                Button {
-                    showStopConfirm = true
-                } label: {
-                    Label("Stop", systemImage: "xmark.circle.fill")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.18)))
-                        .foregroundStyle(.primary)
-                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.pink.opacity(0.15)))
+                .foregroundStyle(copiedLink ? Color.green : Color.pink)
             }
+
+            Text(url.absoluteString)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.top, 2)
         }
     }
 
@@ -349,9 +401,8 @@ struct FamilyView: View {
             if infoExpanded {
                 VStack(alignment: .leading, spacing: 8) {
                     bullet("Data is stored in your iCloud account and transmitted through Apple's servers. It never touches any MyHeart backend — there isn't one.")
-                    bullet("Only people you invite via the share sheet can see your live data.")
-                    bullet("Updates are throttled to one every 30 seconds to save battery and iCloud quota.")
-                    bullet("You can stop sharing anytime — watchers lose access immediately.")
+                    bullet("Only people who accept your invite link can see your live data. Revoke access by tapping Stop Sharing.")
+                    bullet("Updates are throttled to one every 30 seconds; emergencies bypass the throttle.")
                     bullet("Revoking iCloud access for MyHeart in iOS Settings also stops the feature.")
                 }
                 .font(.caption)
@@ -372,11 +423,13 @@ struct FamilyView: View {
 
     // MARK: Actions
 
-    /// Both "Start Live Sharing" and "Invite" now just open the share sheet.
-    /// The actual save-record-plus-share happens inside the
-    /// UICloudSharingController prep handler via prepareShareForSheet.
-    private func presentShareSheet() {
-        shareSheet = ShareSheetState()
+    private func enableSharing() async {
+        let status = currentStatusOrPlaceholder()
+        do {
+            _ = try await sharing.prepareShareForSheet(from: status)
+        } catch {
+            // Error surfaces via sharing.lastPublishError; the inline banner shows it.
+        }
     }
 
     private func currentStatusOrPlaceholder() -> LiveHeartStatus {
@@ -472,12 +525,6 @@ private struct FollowedRow: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(.tertiarySystemGroupedBackground)))
     }
-}
-
-/// Identified struct purely so `.sheet(item:)` triggers presentation.
-/// The actual share is fetched inside the sheet's prepare handler.
-private struct ShareSheetState: Identifiable {
-    let id = UUID()
 }
 
 #Preview {
