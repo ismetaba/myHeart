@@ -11,6 +11,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 profileSection
+                sharingSection
                 zonesSection
                 thresholdsSection
                 healthSection
@@ -18,6 +19,24 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .onAppear(perform: syncLocalState)
+        }
+    }
+
+    private var sharingSection: some View {
+        Section {
+            HStack {
+                Text("Display Name")
+                Spacer()
+                TextField("Your name", text: $profile.displayName)
+                    .multilineTextAlignment(.trailing)
+                    .textContentType(.name)
+                    .submitLabel(.done)
+                    .foregroundStyle(.primary)
+            }
+        } header: {
+            Text("Live Sharing")
+        } footer: {
+            Text("This is the name family members see when you share your heart live. Defaults to your device name.")
         }
     }
 

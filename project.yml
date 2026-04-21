@@ -34,6 +34,13 @@ targets:
       properties:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.access: []
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.myheart.MyHeart
+        com.apple.developer.icloud-services:
+          - CloudKit
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.com.myheart.MyHeart
+        aps-environment: development
     info:
       path: MyHeart/Info.plist
       properties:
@@ -47,5 +54,9 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes:
+          - remote-notification
+          - fetch
         NSHealthShareUsageDescription: "MyHeart reads your heart rate, resting heart rate, and HRV from Apple Health to display insights and let you export a PDF summary."
         NSHealthUpdateUsageDescription: "MyHeart does not write health data. This key is declared only in case future features need to save workouts."
+        NSUserNotificationsUsageDescription: "MyHeart sends local alerts when a followed family member's heart rate crosses a threshold you choose."

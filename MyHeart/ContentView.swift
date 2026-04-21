@@ -13,6 +13,9 @@ struct ContentView: View {
             DashboardView()
                 .tabItem { Label("Heart", systemImage: "heart.fill") }
 
+            FamilyView()
+                .tabItem { Label("Family", systemImage: "person.2.fill") }
+
             HistoryView()
                 .tabItem { Label("History", systemImage: "list.bullet.rectangle") }
 
@@ -28,12 +31,23 @@ struct ContentView: View {
             },
             message: { Text(viewModel.authorizationError ?? "") }
         )
+        .task { await requestNotificationsIfNeeded() }
+    }
+
+    private func requestNotificationsIfNeeded() async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .notDetermined else { return }
+        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
     }
 }
+
+import UserNotifications
 
 #Preview {
     ContentView()
         .environmentObject(HeartRateViewModel.preview)
         .environmentObject(HealthOverviewViewModel.preview)
         .environmentObject(UserProfile.shared)
+        .environmentObject(LiveSharingService.shared)
 }

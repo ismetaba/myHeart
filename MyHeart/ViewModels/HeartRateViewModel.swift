@@ -206,6 +206,35 @@ final class HeartRateViewModel: ObservableObject {
             end: prevEnd
         )
         recomputeDerived()
+        publishLiveStatusIfSharing()
+    }
+
+    /// Pushes the latest heart state into the live-sharing service.
+    /// The service throttles/coalesces writes — call it often, it's cheap.
+    private func publishLiveStatusIfSharing() {
+        let sharing = LiveSharingService.shared
+        guard sharing.sharingEnabled else { return }
+        guard let latest = summary.latest else { return }
+
+        let maxHR = profile.maxHR
+        let zone = HeartRateZone(bpm: latest.bpm, maxHR: maxHR)
+
+        let status = LiveHeartStatus(
+            id: CloudKitConfig.liveStatusRecordName,
+            ownerID: nil,
+            currentBPM: Int(latest.bpm.rounded()),
+            zoneRaw: zone.rawValue,
+            restingBPM: summary.restingBPM.map { Int($0.rounded()) },
+            hrvMs: summary.hrvSDNN,
+            updatedAt: latest.date,
+            isElevated: Int(latest.bpm.rounded()) >= profile.elevatedThreshold,
+            elevatedThreshold: profile.elevatedThreshold,
+            displayName: profile.displayName,
+            deviceName: latest.source,
+            maxHR: Int(maxHR.rounded()),
+            note: nil
+        )
+        sharing.publish(status)
     }
 
     private func refreshDaily() async throws {

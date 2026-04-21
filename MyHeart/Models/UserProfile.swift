@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Shared user profile. Age drives max HR which drives zone thresholds.
 /// Users can override max HR directly if they know their actual value
@@ -11,6 +12,7 @@ final class UserProfile: ObservableObject {
     @AppStorage("profile.age") private var storedAge: Int = 30
     @AppStorage("profile.maxHROverride") private var storedMaxHROverride: Int = 0
     @AppStorage("profile.elevatedThreshold") private var storedElevatedThreshold: Int = 100
+    @AppStorage("profile.displayName") private var storedDisplayName: String = ""
 
     @Published var age: Int {
         didSet { storedAge = age }
@@ -26,12 +28,19 @@ final class UserProfile: ObservableObject {
         didSet { storedElevatedThreshold = elevatedThreshold }
     }
 
+    /// Shown to family members when you share. Defaults to the device name.
+    @Published var displayName: String {
+        didSet { storedDisplayName = displayName }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         self.age = defaults.integer(forKey: "profile.age") == 0 ? 30 : defaults.integer(forKey: "profile.age")
         self.maxHROverride = defaults.integer(forKey: "profile.maxHROverride")
         let stored = defaults.integer(forKey: "profile.elevatedThreshold")
         self.elevatedThreshold = stored == 0 ? 100 : stored
+        let storedName = defaults.string(forKey: "profile.displayName") ?? ""
+        self.displayName = storedName.isEmpty ? UIDevice.current.name : storedName
     }
 
     /// Max heart rate used for zone computation.

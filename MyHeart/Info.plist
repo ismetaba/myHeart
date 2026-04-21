@@ -24,6 +24,13 @@
 	<string>MyHeart reads your heart rate, resting heart rate, and HRV from Apple Health to display insights and let you export a PDF summary.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>MyHeart does not write health data. This key is declared only in case future features need to save workouts.</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>MyHeart sends local alerts when a followed family member's heart rate crosses a threshold you choose.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+		<string>fetch</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
