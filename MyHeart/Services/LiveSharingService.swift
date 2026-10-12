@@ -33,6 +33,9 @@ final class LiveSharingService: ObservableObject {
     @Published var sharingEnabled: Bool = false
     @Published var currentShareURL: URL?
     @Published var participantCount: Int = 0
+    /// Names of people who joined my share, when iCloud reveals them. Can be
+    /// shorter than `participantCount` (public-link joiners may stay anonymous).
+    @Published var participantNames: [String] = []
     @Published var lastPublishedStatus: LiveHeartStatus?
     /// Problems with *my* sharing (enable, publish, stop).
     @Published var lastError: SharingError?
@@ -41,6 +44,22 @@ final class LiveSharingService: ObservableObject {
     @Published var followed: [FollowedPerson] = []
     @Published var isWorking: Bool = false
     @Published var isRefreshingFollowed: Bool = false
+    /// Owner name of someone the user just started following, so the Family
+    /// screens can confirm it. Cleared by the UI once seen.
+    @Published var justFollowedID: String?
+
+    // Only written in this file, so these can be `private(set)`.
+
+    /// False until the first iCloud account check returned (or failed), so
+    /// the UI can show "Checking…" instead of a misleading error.
+    @Published private(set) var hasCheckedAccount = false
+    /// The last account check threw (usually no network).
+    @Published private(set) var accountCheckFailed = false
+    /// Set once the sharing state was read from iCloud for the current account.
+    @Published private(set) var didLoadSharingState = false
+    /// The first full bootstrap finished, so an empty followed list really
+    /// means "nobody" rather than "not loaded yet".
+    @Published private(set) var hasBootstrapped = false
 
     // MARK: - Internals
 
@@ -48,11 +67,8 @@ final class LiveSharingService: ObservableObject {
     var privateDB: CKDatabase { container.privateCloudDatabase }
     var sharedDB: CKDatabase { container.sharedCloudDatabase }
 
-    /// Set once the sharing state was read from iCloud for the current account.
-    private var didLoadSharingState = false
     private var zoneConfirmed = false
     private var bootstrapTask: Task<Void, Never>?
-    private var hasBootstrapped = false
     private var accountObserver: NSObjectProtocol?
 
     /// Last record returned by the server; reused for the next write.
@@ -132,9 +148,12 @@ final class LiveSharingService: ObservableObject {
     func refreshAccountStatus() async {
         do {
             accountStatus = try await container.accountStatus()
+            accountCheckFailed = false
         } catch {
             accountStatus = .couldNotDetermine
+            accountCheckFailed = true
         }
+        hasCheckedAccount = true
     }
 
     /// Lightweight readiness check used by background publishes: makes sure we
@@ -168,7 +187,9 @@ final class LiveSharingService: ObservableObject {
             sharingEnabled = false
             currentShareURL = nil
             participantCount = 0
+            participantNames = []
             followed = []
+            justFollowedID = nil
             lastError = nil
             followError = nil
         }
@@ -189,7 +210,9 @@ final class LiveSharingService: ObservableObject {
         sharingEnabled = false
         currentShareURL = nil
         participantCount = 0
+        participantNames = []
         followed = []
+        justFollowedID = nil
     }
 
     // MARK: - Zone
@@ -259,7 +282,13 @@ final class LiveSharingService: ObservableObject {
         sharingEnabled = url != nil
         currentShareURL = url
         let others = share?.participants.filter { $0.role != .owner } ?? []
-        participantCount = others.filter { $0.acceptanceStatus == .accepted }.count
+        let accepted = others.filter { $0.acceptanceStatus == .accepted }
+        participantCount = accepted.count
+        participantNames = accepted.compactMap { participant in
+            guard let components = participant.userIdentity.nameComponents else { return nil }
+            let name = PersonNameComponentsFormatter.localizedString(from: components, style: .default, options: [])
+            return name.isEmpty ? nil : name
+        }
     }
 
     private func fetchShare(for record: CKRecord) async throws -> CKShare? {
@@ -478,6 +507,7 @@ final class LiveSharingService: ObservableObject {
         sharingEnabled = false
         currentShareURL = nil
         participantCount = 0
+        participantNames = []
     }
 
     // MARK: - Publishing (throttled)

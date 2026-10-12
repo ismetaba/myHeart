@@ -9,6 +9,7 @@ extension LiveSharingService {
     func accept(shareMetadata metadata: CKShare.Metadata) async {
         LiveSharingService.log("accept() starting, root=\(metadata.hierarchicalRootRecordID?.recordName ?? "?")")
         followError = nil
+        justFollowedID = nil
         // Whatever happens next (success or an error to explain), the user
         // should land on the Family tab after tapping an invite.
         AppRouter.shared.selectedTab = .family
@@ -24,7 +25,8 @@ extension LiveSharingService {
         }
 
         // Already accepted (e.g. the link was tapped twice) — just refresh.
-        if metadata.participantStatus != .accepted {
+        let isNewFollow = metadata.participantStatus != .accepted
+        if isNewFollow {
             do {
                 try await acceptShare(metadata)
             } catch {
@@ -40,7 +42,9 @@ extension LiveSharingService {
         for attempt in 0..<3 {
             await refreshFollowed()
             if followed.contains(where: { $0.zoneID.ownerName == ownerName }) {
-                // Take the user straight to the person they just followed.
+                // Confirm the new follow (a re-tapped link needs no fanfare)
+                // and take the user straight to that person.
+                if isNewFollow { justFollowedID = ownerName }
                 AppRouter.shared.openFamily(personID: ownerName)
                 break
             }
@@ -133,20 +137,38 @@ extension LiveSharingService {
         }
     }
 
+    /// Outcome of refreshing one followed person, so the detail screen can
+    /// tell "they stopped sharing" apart from "we couldn't reach iCloud".
+    enum FollowRefreshResult {
+        case updated(FollowedPerson)
+        /// The sharer stopped sharing (or revoked the link).
+        case removed
+        case failed(SharingError)
+    }
+
     /// Fetches a single followed record (used while a detail view is open).
-    func refreshFollowed(person: FollowedPerson) async -> FollowedPerson? {
+    func refreshFollowed(person: FollowedPerson) async -> FollowRefreshResult {
         do {
             let record = try await sharedDB.record(for: person.recordID)
-            guard let status = LiveHeartStatus(record: record) else { return nil }
+            guard let status = LiveHeartStatus(record: record) else {
+                return .failed(.unknown("The latest update couldn't be read."))
+            }
             var updated = person
             updated.status = status
             updated.lastFetchedAt = Date()
             if let idx = followed.firstIndex(where: { $0.id == person.id }) {
                 followed[idx] = updated
             }
-            return updated
+            return .updated(updated)
+        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            // Same signal refreshFollowed() uses to drop someone; keep the
+            // list in sync instead of waiting for the next full refresh.
+            LiveSharingService.log("refreshFollowed(person:): record gone for \(person.id)")
+            followed.removeAll { $0.id == person.id }
+            return .removed
         } catch {
-            return nil
+            LiveSharingService.log("refreshFollowed(person:) failed: \(error.localizedDescription)")
+            return .failed(SharingError.wrap(error))
         }
     }
 
