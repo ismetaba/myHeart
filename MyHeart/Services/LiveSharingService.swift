@@ -219,8 +219,20 @@ final class LiveSharingService: ObservableObject {
         do {
             let record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
             cachedRecord = record
-            let share = record.share != nil ? try? await fetchShare(for: record) : nil
-            applyShareState(share)
+            if record.share != nil {
+                do {
+                    applyShareState(try await fetchShare(for: record))
+                } catch let error as CKError where error.code == .unknownItem {
+                    applyShareState(nil)  // the share was deleted
+                } catch {
+                    // A network blip must not flip sharing "off"; keep the
+                    // current state and try again on the next load.
+                    lastError = SharingError.wrap(error)
+                    return
+                }
+            } else {
+                applyShareState(nil)
+            }
             if let status = LiveHeartStatus(record: record) {
                 lastPublishedStatus = status
             }
