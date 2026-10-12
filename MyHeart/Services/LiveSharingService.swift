@@ -381,21 +381,27 @@ final class LiveSharingService: ObservableObject {
 
     private struct TimeoutError: Error {}
 
+    /// Carries a CloudKit result (CKRecord is only `Sendable` on iOS 17+)
+    /// out of the timeout task group. The value is handed over exactly once.
+    private struct UncheckedSendable<Value>: @unchecked Sendable {
+        let value: Value
+    }
+
     /// Races an async operation against a deadline. Throws `TimeoutError` on
     /// timeout and cancels the underlying operation.
-    private func withThrowingTimeout<T: Sendable>(
+    private func withThrowingTimeout<T>(
         seconds: TimeInterval,
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
+        try await withThrowingTaskGroup(of: UncheckedSendable<T>.self) { group in
+            group.addTask { UncheckedSendable(value: try await operation()) }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw TimeoutError()
             }
             defer { group.cancelAll() }
             guard let result = try await group.next() else { throw TimeoutError() }
-            return result
+            return result.value
         }
     }
 

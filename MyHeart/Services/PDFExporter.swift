@@ -1,18 +1,38 @@
 import Foundation
 import UIKit
-import PDFKit
 
+/// Renders the shareable heart-rate reports.
+///
+/// Safe to call off the main thread (the dashboard renders on a background
+/// task so long ranges don't freeze the UI).
 enum PDFExporter {
     private static let pageWidth: CGFloat = 612   // US Letter @72dpi
     private static let pageHeight: CGFloat = 792
     private static let margin: CGFloat = 48
+    /// Content must end above this line; the page footer sits below it.
+    private static var contentBottom: CGFloat { pageHeight - margin }
+    private static var contentWidth: CGFloat { pageWidth - 2 * margin }
 
-    private static let titleColor = UIColor.systemPink
-    private static let gridColor = UIColor(white: 0.75, alpha: 1)
+    // Fixed colors only. The page is always white, so dynamic system colors
+    // (`.label`, `.systemPink`, …) would resolve to their Dark Mode variants
+    // and make text invisible when the phone is in Dark Mode.
+    private static let accentColor = UIColor(red: 0.91, green: 0.20, blue: 0.42, alpha: 1)
+    private static let gridColor = UIColor(white: 0.80, alpha: 1)
     private static let axisColor = UIColor(white: 0.55, alpha: 1)
-    private static let lineColor = UIColor.systemPink
-    private static let labelColor = UIColor.darkGray
-    private static let bodyColor = UIColor.label
+    private static let labelColor = UIColor(white: 0.35, alpha: 1)
+    private static let bodyColor = UIColor(white: 0.10, alpha: 1)
+    private static let ruleColor = UIColor(white: 0.86, alpha: 1)
+    private static let averageColor = UIColor(white: 0.45, alpha: 1)
+    private static let chartBackground = UIColor(white: 0.985, alpha: 1)
+    private static let improvementColor = UIColor(red: 0.16, green: 0.62, blue: 0.30, alpha: 1)
+    private static let declineColor = UIColor(red: 0.90, green: 0.49, blue: 0.10, alpha: 1)
+
+    /// Up to this many samples are listed row by row; beyond that the report
+    /// shows an hourly / daily summary table (a 6-month range would otherwise
+    /// produce thousands of pages).
+    private static let maxRawSampleRows = 500
+    /// Above this many samples the trend chart is drawn from aggregated buckets.
+    private static let maxRawChartPoints = 1500
 
     // MARK: - Public API
 
@@ -25,20 +45,17 @@ enum PDFExporter {
         rangeTitle: String,
         previousRangeLabel: String
     ) throws -> URL {
-        let data = render { ctx in
-            let header = Header(
-                title: "MyHeart Report",
-                subtitle: rangeTitle
-            )
-            ctx.beginPage()
-            var y = margin
-            y = drawHeader(header, y: y)
-            y += 12
+        let sorted = samples.sorted { $0.date < $1.date }
 
-            y = drawSectionHeader("Summary", y: y)
-            y = drawDeltaKeyValueGrid(
+        let data = render { ctx in
+            let page = Page(ctx: ctx, continuationTitle: "MyHeart Report — continued")
+            page.begin()
+            page.y = drawHeader(Header(title: "MyHeart Report", subtitle: rangeTitle), y: page.y) + 12
+
+            page.y = drawSectionHeader("Summary", y: page.y)
+            page.y = drawDeltaKeyValueGrid(
                 [
-                    ("Latest", summary.latest.map { "\(Int($0.bpm)) BPM • \(shortDate($0.date))" } ?? "—", nil, nil),
+                    ("Latest", summary.latest.map { "\(Int($0.bpm.rounded())) BPM • \(shortDate($0.date))" } ?? "—", nil, nil),
                     ("Average", format(summary.averageBPM, unit: "BPM"),
                      deltaText(current: summary.averageBPM, previous: previousSummary.averageBPM, unit: "bpm"),
                      deltaKind(current: summary.averageBPM, previous: previousSummary.averageBPM, lowerIsBetter: nil)),
@@ -51,45 +68,27 @@ enum PDFExporter {
                     ("Min", format(summary.minBPM, unit: "BPM"), nil, nil),
                     ("Max", format(summary.maxBPM, unit: "BPM"), nil, nil),
                     ("Samples", "\(summary.sampleCount)", nil, nil),
-                    ("vs", previousRangeLabel, nil, nil),
+                    ("Compared with", previousRangeLabel, nil, nil),
                 ],
-                y: y
-            )
-            y += 14
+                y: page.y
+            ) + 14
 
-            // Zones
             if zones.totalDuration > 0 {
-                y = drawSectionHeader("Time in Zones", y: y)
-                let barRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 16)
-                drawZoneStackedBar(breakdown: zones, in: barRect)
-                y += barRect.height + 10
-                y = drawZoneTable(breakdown: zones, maxHR: maxHR, y: y)
-                y += 10
+                drawZonesSection(title: "Time in Zones", breakdown: zones, maxHR: maxHR, page: page)
             }
 
-            y = drawSectionHeader("Heart Rate Trend", y: y)
-            let chartRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 220)
-            drawLineChart(samples: samples, averageBPM: summary.averageBPM, in: chartRect)
-            y += chartRect.height + 18
+            let chartHeight: CGFloat = 220
+            page.ensureSpace(sectionHeaderHeight + chartHeight + 18)
+            page.y = drawSectionHeader("Heart Rate Trend", y: page.y)
+            let chartRect = CGRect(x: margin, y: page.y, width: contentWidth, height: chartHeight)
+            drawLineChart(samples: sorted, averageBPM: summary.averageBPM, in: chartRect)
+            page.y += chartHeight + 18
 
-            // Sample table, paginated.
-            y = drawSectionHeader("Samples", y: y)
-            y = drawTableHeader(["Date / Time", "BPM", "Source"], widths: [240, 60, 180], y: y)
-            for sample in samples {
-                if y > pageHeight - margin - 20 {
-                    ctx.beginPage()
-                    y = margin
-                    y = drawPageHeader("MyHeart Report — continued", y: y) + 8
-                    y = drawTableHeader(["Date / Time", "BPM", "Source"], widths: [240, 60, 180], y: y)
-                }
-                y = drawTableRow(
-                    [shortDate(sample.date), "\(Int(sample.bpm.rounded()))", sample.source],
-                    widths: [240, 60, 180],
-                    y: y
-                )
+            if sorted.count <= maxRawSampleRows {
+                drawSampleTable(sorted, page: page)
+            } else {
+                drawAggregateTable(sorted, page: page)
             }
-
-            drawFooter()
         }
         return try write(data, prefix: "MyHeart-Overall")
     }
@@ -105,22 +104,20 @@ enum PDFExporter {
         let calendar = Calendar.current
         var samplesByDay: [Date: [HeartRateSample]] = [:]
         for sample in samples {
-            let day = calendar.startOfDay(for: sample.date)
-            samplesByDay[day, default: []].append(sample)
+            samplesByDay[calendar.startOfDay(for: sample.date), default: []].append(sample)
         }
 
         // Aggregate zones across all days for the "Period Zones" section.
         let aggregateZones = HeartRateZoneAnalyzer.breakdown(samples: samples, maxHR: maxHR)
 
         let data = render { ctx in
+            let page = Page(ctx: ctx, continuationTitle: "MyHeart Daily Report — continued")
+            page.begin()
             let header = Header(
                 title: "MyHeart Daily Report",
                 subtitle: "\(dayOnly(start)) — \(dayOnly(end))   •   \(stats.count) day\(stats.count == 1 ? "" : "s")"
             )
-            ctx.beginPage()
-            var y = margin
-            y = drawHeader(header, y: y)
-            y += 12
+            page.y = drawHeader(header, y: page.y) + 12
 
             // Aggregate summary
             let avgOfAvg = avg(stats.compactMap(\.avgBPM))
@@ -128,79 +125,64 @@ enum PDFExporter {
             let minAll = stats.compactMap(\.minBPM).min()
             let maxAll = stats.compactMap(\.maxBPM).max()
 
-            y = drawSectionHeader("Period Summary", y: y)
-            y = drawKeyValueTwoColumn([
+            page.y = drawSectionHeader("Period Summary", y: page.y)
+            page.y = drawKeyValueTwoColumn([
                 ("Avg of Daily Avg", format(avgOfAvg, unit: "BPM")),
                 ("Avg Resting", format(avgResting, unit: "BPM")),
                 ("Lowest Daily Min", format(minAll, unit: "BPM")),
                 ("Highest Daily Max", format(maxAll, unit: "BPM")),
-            ], y: y)
-            y += 16
+            ], y: page.y) + 16
 
             if aggregateZones.totalDuration > 0 {
-                y = drawSectionHeader("Time in Zones (entire range)", y: y)
-                let barRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 16)
-                drawZoneStackedBar(breakdown: aggregateZones, in: barRect)
-                y += barRect.height + 10
-                y = drawZoneTable(breakdown: aggregateZones, maxHR: maxHR, y: y)
-                y += 10
+                drawZonesSection(title: "Time in Zones (entire range)", breakdown: aggregateZones, maxHR: maxHR, page: page)
             }
 
             // Per-day detail: one 24-hour chart per day
-            y = drawSectionHeader("Per-Day Detail (24-Hour View)", y: y)
-            y += 4
-
             let dayChartHeight: CGFloat = 140
-            let dayBlockHeight: CGFloat = dayChartHeight + 58  // header + zone strip + chart + spacing
+            let dayBlockHeight: CGFloat = dayHeaderHeight + 12 + dayChartHeight + 18
+            page.ensureSpace(sectionHeaderHeight + 4 + dayBlockHeight)
+            page.y = drawSectionHeader("Per-Day Detail (24-Hour View)", y: page.y) + 4
+
             for day in stats {
-                if y + dayBlockHeight > pageHeight - margin {
-                    ctx.beginPage()
-                    y = margin
-                    y = drawPageHeader("MyHeart Daily Report — continued", y: y) + 8
-                }
-                y = drawDayHeader(day: day, y: y)
+                page.ensureSpace(dayBlockHeight)
+                page.y = drawDayHeader(day: day, y: page.y)
 
-                // Zone strip
                 if let zb = zonesByDay[day.day], zb.totalDuration > 0 {
-                    let stripRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: 6)
+                    let stripRect = CGRect(x: margin, y: page.y, width: contentWidth, height: 6)
                     drawZoneStackedBar(breakdown: zb, in: stripRect, cornerRadius: 2)
-                    y += stripRect.height + 6
                 }
+                page.y += 12
 
-                let daySamples = samplesByDay[day.day] ?? []
-                let chartRect = CGRect(x: margin, y: y, width: pageWidth - 2 * margin, height: dayChartHeight)
-                drawDay24hChart(samples: daySamples, dayStart: day.day, averageBPM: day.avgBPM, in: chartRect)
-                y += chartRect.height + 18
+                let chartRect = CGRect(x: margin, y: page.y, width: contentWidth, height: dayChartHeight)
+                drawDay24hChart(
+                    samples: samplesByDay[day.day] ?? [],
+                    dayStart: day.day,
+                    averageBPM: day.avgBPM,
+                    calendar: calendar,
+                    in: chartRect
+                )
+                page.y += dayChartHeight + 18
             }
 
             // Per-day table, paginated
-            if y + 80 > pageHeight - margin {
-                ctx.beginPage()
-                y = margin
-                y = drawPageHeader("MyHeart Daily Report — continued", y: y) + 8
-            }
-            y = drawSectionHeader("Per-Day Breakdown", y: y)
             let cols = ["Date", "Min", "Avg", "Max", "Resting", "Samples"]
-            let widths: [CGFloat] = [130, 60, 60, 60, 70, 80]
-            y = drawTableHeader(cols, widths: widths, y: y)
+            let widths: [CGFloat] = [150, 60, 60, 60, 70, contentWidth - 400]
+            page.ensureSpace(sectionHeaderHeight + tableHeaderHeight + tableRowHeight * 3)
+            page.y = drawSectionHeader("Per-Day Breakdown", y: page.y)
+            page.y = drawTableHeader(cols, widths: widths, y: page.y)
             for day in stats {
-                if y > pageHeight - margin - 20 {
-                    ctx.beginPage()
-                    y = margin
-                    y = drawPageHeader("MyHeart Daily Report — continued", y: y) + 8
-                    y = drawTableHeader(cols, widths: widths, y: y)
+                if page.ensureSpace(tableRowHeight) {
+                    page.y = drawTableHeader(cols, widths: widths, y: page.y)
                 }
-                y = drawTableRow([
+                page.y = drawTableRow([
                     dayOnly(day.day),
                     intOrDash(day.minBPM),
                     intOrDash(day.avgBPM),
                     intOrDash(day.maxBPM),
                     intOrDash(day.restingBPM),
                     "\(day.sampleCount)",
-                ], widths: widths, y: y)
+                ], widths: widths, y: page.y)
             }
-
-            drawFooter()
         }
         return try write(data, prefix: "MyHeart-Daily")
     }
@@ -210,6 +192,37 @@ enum PDFExporter {
     private struct Header {
         let title: String
         let subtitle: String
+    }
+
+    /// Current page + vertical cursor. Every page gets a numbered footer and
+    /// every continuation page a small header.
+    private final class Page {
+        let ctx: UIGraphicsPDFRendererContext
+        let continuationTitle: String
+        private(set) var number = 0
+        var y: CGFloat = 0
+
+        init(ctx: UIGraphicsPDFRendererContext, continuationTitle: String) {
+            self.ctx = ctx
+            self.continuationTitle = continuationTitle
+        }
+
+        func begin() {
+            ctx.beginPage()
+            number += 1
+            PDFExporter.drawFooter(page: number)
+            y = PDFExporter.margin
+        }
+
+        /// Starts a new page unless `height` more points still fit.
+        /// Returns true when a page break happened.
+        @discardableResult
+        func ensureSpace(_ height: CGFloat) -> Bool {
+            guard y + height > PDFExporter.contentBottom else { return false }
+            begin()
+            y = PDFExporter.drawPageHeader(continuationTitle, y: y) + 8
+            return true
+        }
     }
 
     private static func render(_ draw: (UIGraphicsPDFRendererContext) -> Void) -> Data {
@@ -224,8 +237,16 @@ enum PDFExporter {
     }
 
     private static func write(_ data: Data, prefix: String) throws -> URL {
-        let filename = "\(prefix)-\(Int(Date().timeIntervalSince1970)).pdf"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory
+        // Drop reports from earlier exports so the temp folder doesn't grow.
+        if let old = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for url in old where url.lastPathComponent.hasPrefix("MyHeart-") && url.pathExtension == "pdf" {
+                try? fm.removeItem(at: url)
+            }
+        }
+        let stamp = fileStampFormatter.string(from: Date())
+        let url = dir.appendingPathComponent("\(prefix)-\(stamp).pdf")
         try data.write(to: url, options: .atomic)
         return url
     }
@@ -234,11 +255,10 @@ enum PDFExporter {
 
     private static func drawHeader(_ header: Header, y: CGFloat) -> CGFloat {
         var y = y
-        let titleAttrs: [NSAttributedString.Key: Any] = [
+        y = drawString(header.title, at: CGPoint(x: margin, y: y), attrs: [
             .font: UIFont.systemFont(ofSize: 26, weight: .bold),
-            .foregroundColor: titleColor,
-        ]
-        y = drawString(header.title, at: CGPoint(x: margin, y: y), attrs: titleAttrs)
+            .foregroundColor: accentColor,
+        ])
         y += 2
         y = drawString(header.subtitle, at: CGPoint(x: margin, y: y), attrs: [
             .font: UIFont.systemFont(ofSize: 12, weight: .medium),
@@ -246,16 +266,12 @@ enum PDFExporter {
         ])
         y += 4
 
-        let generated = "Generated \(shortDate(Date()))"
-        let genAttrs: [NSAttributedString.Key: Any] = [
+        drawString("Generated \(shortDate(Date()))", at: CGPoint(x: pageWidth - margin, y: margin + 2), attrs: [
             .font: UIFont.systemFont(ofSize: 10),
             .foregroundColor: axisColor,
-        ]
-        let size = (generated as NSString).size(withAttributes: genAttrs)
-        (generated as NSString).draw(at: CGPoint(x: pageWidth - margin - size.width, y: margin + 2), withAttributes: genAttrs)
+        ], align: .right)
 
-        // Underline rule
-        drawHorizontalLine(at: y + 6, color: UIColor(white: 0.85, alpha: 1), dashed: false)
+        drawHorizontalLine(at: y + 6, color: ruleColor)
         return y + 12
     }
 
@@ -266,33 +282,54 @@ enum PDFExporter {
         ])
     }
 
-    private static func drawFooter() {
-        let text = "MyHeart • data sourced from Apple Health"
+    private static func drawFooter(page: Int) {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 9),
             .foregroundColor: axisColor,
         ]
-        let size = (text as NSString).size(withAttributes: attrs)
-        (text as NSString).draw(
-            at: CGPoint(x: pageWidth / 2 - size.width / 2, y: pageHeight - margin + 12),
-            withAttributes: attrs
-        )
+        let footerY = pageHeight - margin + 14
+        drawString("MyHeart • data sourced from Apple Health • not a medical device", at: CGPoint(x: margin, y: footerY), attrs: attrs)
+        drawString("Page \(page)", at: CGPoint(x: pageWidth - margin, y: footerY), attrs: attrs, align: .right)
     }
 
     // MARK: - Sections
 
+    private static let sectionHeaderHeight: CGFloat = 28
+
     private static func drawSectionHeader(_ text: String, y: CGFloat) -> CGFloat {
-        let attrs: [NSAttributedString.Key: Any] = [
+        let next = drawString(text, at: CGPoint(x: margin, y: y), attrs: [
             .font: UIFont.systemFont(ofSize: 14, weight: .semibold),
             .foregroundColor: bodyColor,
-        ]
-        let next = drawString(text, at: CGPoint(x: margin, y: y), attrs: attrs)
-        drawHorizontalLine(at: next + 2, color: UIColor(white: 0.88, alpha: 1), dashed: false)
+        ])
+        drawHorizontalLine(at: next + 2, color: ruleColor)
         return next + 10
     }
 
+    private static func drawNote(_ text: String, y: CGFloat) -> CGFloat {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 9),
+            .foregroundColor: labelColor,
+        ]
+        let rect = CGRect(x: margin, y: y, width: contentWidth, height: 40)
+        let bounds = (text as NSString).boundingRect(
+            with: rect.size, options: [.usesLineFragmentOrigin], attributes: attrs, context: nil
+        )
+        (text as NSString).draw(with: rect, options: [.usesLineFragmentOrigin], attributes: attrs, context: nil)
+        return y + ceil(bounds.height) + 6
+    }
+
+    private static func drawZonesSection(title: String, breakdown: ZoneBreakdown, maxHR: Double, page: Page) {
+        let height = sectionHeaderHeight + 16 + 10 + zoneRowHeight * CGFloat(HeartRateZone.allCases.count) + 10
+        page.ensureSpace(height)
+        page.y = drawSectionHeader(title, y: page.y)
+        let barRect = CGRect(x: margin, y: page.y, width: contentWidth, height: 16)
+        drawZoneStackedBar(breakdown: breakdown, in: barRect)
+        page.y += barRect.height + 10
+        page.y = drawZoneTable(breakdown: breakdown, maxHR: maxHR, y: page.y) + 10
+    }
+
     private static func drawKeyValueTwoColumn(_ items: [(String, String)], y: CGFloat) -> CGFloat {
-        let colWidth = (pageWidth - margin * 2) / 2
+        let colWidth = contentWidth / 2
         let keyAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: labelColor,
@@ -306,18 +343,13 @@ enum PDFExporter {
         let rowHeight: CGFloat = 18
         for i in stride(from: 0, to: items.count, by: 2) {
             let left = items[i]
-            (left.0 as NSString).draw(at: CGPoint(x: margin, y: y), withAttributes: keyAttrs)
-            let leftValSize = (left.1 as NSString).size(withAttributes: valAttrs)
-            (left.1 as NSString).draw(at: CGPoint(x: margin + colWidth - leftValSize.width - 8, y: y), withAttributes: valAttrs)
+            drawString(left.0, at: CGPoint(x: margin, y: y), attrs: keyAttrs)
+            drawString(left.1, at: CGPoint(x: margin + colWidth - 8, y: y), attrs: valAttrs, align: .right)
 
             if i + 1 < items.count {
                 let right = items[i + 1]
-                (right.0 as NSString).draw(at: CGPoint(x: margin + colWidth, y: y), withAttributes: keyAttrs)
-                let rightValSize = (right.1 as NSString).size(withAttributes: valAttrs)
-                (right.1 as NSString).draw(
-                    at: CGPoint(x: pageWidth - margin - rightValSize.width, y: y),
-                    withAttributes: valAttrs
-                )
+                drawString(right.0, at: CGPoint(x: margin + colWidth, y: y), attrs: keyAttrs)
+                drawString(right.1, at: CGPoint(x: pageWidth - margin, y: y), attrs: valAttrs, align: .right)
             }
             y += rowHeight
         }
@@ -326,18 +358,17 @@ enum PDFExporter {
 
     // MARK: - Tables
 
+    private static let tableHeaderHeight: CGFloat = 18
+    private static let tableRowHeight: CGFloat = 15
+
     private static func drawTableHeader(_ columns: [String], widths: [CGFloat], y: CGFloat) -> CGFloat {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 10, weight: .semibold),
             .foregroundColor: labelColor,
         ]
-        var x = margin
-        for (i, col) in columns.enumerated() {
-            (col as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: attrs)
-            x += widths[i]
-        }
+        drawCells(columns, widths: widths, y: y, attrs: attrs)
         let underline = y + 14
-        drawHorizontalLine(at: underline, color: UIColor(white: 0.85, alpha: 1), dashed: false)
+        drawHorizontalLine(at: underline, color: ruleColor)
         return underline + 4
     }
 
@@ -346,12 +377,79 @@ enum PDFExporter {
             .font: UIFont.systemFont(ofSize: 10, weight: .regular),
             .foregroundColor: bodyColor,
         ]
+        drawCells(values, widths: widths, y: y, attrs: attrs)
+        return y + tableRowHeight
+    }
+
+    /// Draws one line of cells, truncating text that doesn't fit its column.
+    private static func drawCells(_ values: [String], widths: [CGFloat], y: CGFloat, attrs: [NSAttributedString.Key: Any]) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        var cellAttrs = attrs
+        cellAttrs[.paragraphStyle] = paragraph
+
         var x = margin
-        for (i, v) in values.enumerated() {
-            (v as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: attrs)
-            x += widths[i]
+        for (i, value) in values.enumerated() {
+            let width = i < widths.count ? widths[i] : 60
+            let rect = CGRect(x: x, y: y, width: max(10, width - 6), height: 14)
+            (value as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: cellAttrs, context: nil)
+            x += width
         }
-        return y + 15
+    }
+
+    private static func drawSampleTable(_ samples: [HeartRateSample], page: Page) {
+        let columns = ["Date / Time", "BPM", "Source"]
+        let widths: [CGFloat] = [200, 60, contentWidth - 260]
+        page.ensureSpace(sectionHeaderHeight + tableHeaderHeight + tableRowHeight * 3)
+        page.y = drawSectionHeader("Samples", y: page.y)
+        page.y = drawTableHeader(columns, widths: widths, y: page.y)
+        for sample in samples {
+            if page.ensureSpace(tableRowHeight) {
+                page.y = drawTableHeader(columns, widths: widths, y: page.y)
+            }
+            page.y = drawTableRow(
+                [shortDate(sample.date), "\(Int(sample.bpm.rounded()))", sample.source],
+                widths: widths,
+                y: page.y
+            )
+        }
+    }
+
+    /// Hourly (≤ 2 days of data) or daily summary rows for large sample sets.
+    private static func drawAggregateTable(_ samples: [HeartRateSample], page: Page) {
+        guard let first = samples.first?.date, let last = samples.last?.date else { return }
+        let calendar = Calendar.current
+        let hourly = last.timeIntervalSince(first) <= 2 * 86_400
+        let component: Calendar.Component = hourly ? .hour : .day
+        let groups = Dictionary(grouping: samples) {
+            calendar.dateInterval(of: component, for: $0.date)?.start ?? $0.date
+        }
+
+        let columns = [hourly ? "Hour" : "Day", "Min", "Avg", "Max", "Samples"]
+        let widths: [CGFloat] = [200, 70, 70, 70, contentWidth - 410]
+        page.ensureSpace(sectionHeaderHeight + 24 + tableHeaderHeight + tableRowHeight * 3)
+        page.y = drawSectionHeader(hourly ? "Hourly Summary" : "Daily Summary", y: page.y)
+        page.y = drawNote(
+            "\(samples.count) samples are too many to list individually, so they are summarised per \(hourly ? "hour" : "day").",
+            y: page.y
+        )
+        page.y = drawTableHeader(columns, widths: widths, y: page.y)
+
+        for key in groups.keys.sorted() {
+            guard let bucket = groups[key], !bucket.isEmpty else { continue }
+            let bpms = bucket.map(\.bpm)
+            let mean = bpms.reduce(0, +) / Double(bpms.count)
+            if page.ensureSpace(tableRowHeight) {
+                page.y = drawTableHeader(columns, widths: widths, y: page.y)
+            }
+            page.y = drawTableRow([
+                hourly ? shortDate(key) : dayOnly(key),
+                intOrDash(bpms.min()),
+                intOrDash(mean),
+                intOrDash(bpms.max()),
+                "\(bucket.count)",
+            ], widths: widths, y: page.y)
+        }
     }
 
     // MARK: - Line chart (overall)
@@ -362,91 +460,109 @@ enum PDFExporter {
         in rect: CGRect
     ) {
         drawChartBackground(in: rect)
-        guard samples.count > 1 else {
+        guard samples.count > 1,
+              let firstDate = samples.first?.date,
+              let lastDate = samples.last?.date else {
             drawCenteredText("Not enough data to plot.", in: rect)
             return
         }
 
-        let padLeft: CGFloat = 40
-        let padRight: CGFloat = 12
-        let padTop: CGFloat = 12
-        let padBottom: CGFloat = 28
-
         let plot = CGRect(
-            x: rect.minX + padLeft,
-            y: rect.minY + padTop,
-            width: rect.width - padLeft - padRight,
-            height: rect.height - padTop - padBottom
+            x: rect.minX + 40,
+            y: rect.minY + 12,
+            width: rect.width - 52,
+            height: rect.height - 40
         )
 
-        let bpms = samples.map(\.bpm)
-        let (yMin, yMax, yTicks) = niceYAxis(min: bpms.min() ?? 40, max: bpms.max() ?? 160)
-
-        let dates = samples.map(\.date).sorted()
-        let tMin = dates.first!.timeIntervalSince1970
-        let tMax = dates.last!.timeIntervalSince1970
+        let tMin = firstDate.timeIntervalSince1970
+        let tMax = lastDate.timeIntervalSince1970
         let tRange = max(tMax - tMin, 1)
 
-        // Y gridlines + labels
-        for tick in yTicks {
-            let y = plot.maxY - CGFloat((tick - yMin) / (yMax - yMin)) * plot.height
-            drawDashedHorizontalLine(from: CGPoint(x: plot.minX, y: y), to: CGPoint(x: plot.maxX, y: y), color: gridColor)
-            drawString("\(Int(tick))", at: CGPoint(x: rect.minX + 4, y: y - 6), attrs: axisLabelAttrs, align: .left)
+        // Long ranges: aggregate into buckets (min–max band + mean line)
+        // instead of a path through tens of thousands of points.
+        let buckets: [HeartRateBucket] = samples.count > maxRawChartPoints
+            ? HeartRateBucket.make(from: samples, start: firstDate, end: lastDate.addingTimeInterval(1), maxBuckets: 600)
+            : []
+
+        let lowValue = buckets.isEmpty ? (samples.map(\.bpm).min() ?? 40) : (buckets.map(\.minBPM).min() ?? 40)
+        let highValue = buckets.isEmpty ? (samples.map(\.bpm).max() ?? 160) : (buckets.map(\.maxBPM).max() ?? 160)
+        let (yMin, yMax, yTicks) = niceYAxis(min: lowValue, max: highValue)
+
+        func xFor(_ date: Date) -> CGFloat {
+            plot.minX + CGFloat((date.timeIntervalSince1970 - tMin) / tRange) * plot.width
+        }
+        func yFor(_ bpm: Double) -> CGFloat {
+            plot.maxY - CGFloat((bpm - yMin) / (yMax - yMin)) * plot.height
         }
 
-        // Average rule
-        if let avg = averageBPM, avg >= yMin, avg <= yMax {
-            let y = plot.maxY - CGFloat((avg - yMin) / (yMax - yMin)) * plot.height
-            drawDashedHorizontalLine(from: CGPoint(x: plot.minX, y: y), to: CGPoint(x: plot.maxX, y: y), color: UIColor.systemGray)
-            drawString("avg \(Int(avg))", at: CGPoint(x: plot.maxX - 44, y: y - 12), attrs: axisLabelAttrs, align: .left)
-        }
+        drawYGrid(ticks: yTicks, yFor: yFor, plot: plot, labelX: rect.minX + 4)
+        drawAverageRule(averageBPM, yMin: yMin, yMax: yMax, yFor: yFor, plot: plot)
 
         // X ticks
+        let xFormatter = tRange > 60 * 60 * 48 ? axisDayFormatter : axisTimeFormatter
         let xTickCount = 5
-        let xFmt = DateFormatter()
-        xFmt.dateFormat = tRange > 60 * 60 * 48 ? "MMM d" : "HH:mm"
         for i in 0...xTickCount {
             let t = tMin + Double(i) * (tRange / Double(xTickCount))
             let x = plot.minX + CGFloat((t - tMin) / tRange) * plot.width
-            drawVerticalLine(from: CGPoint(x: x, y: plot.maxY), to: CGPoint(x: x, y: plot.maxY + 3), color: axisColor)
-            let label = xFmt.string(from: Date(timeIntervalSince1970: t))
+            drawLine(from: CGPoint(x: x, y: plot.maxY), to: CGPoint(x: x, y: plot.maxY + 3), color: axisColor)
+            let label = xFormatter.string(from: Date(timeIntervalSince1970: t))
             drawString(label, at: CGPoint(x: x, y: plot.maxY + 6), attrs: axisLabelAttrs, align: .center)
         }
 
-        // Axes
-        drawLine(from: CGPoint(x: plot.minX, y: plot.maxY), to: CGPoint(x: plot.maxX, y: plot.maxY), color: axisColor)
-        drawLine(from: CGPoint(x: plot.minX, y: plot.minY), to: CGPoint(x: plot.minX, y: plot.maxY), color: axisColor)
+        drawAxes(plot)
 
-        // Line
-        let path = UIBezierPath()
-        let sorted = samples.sorted { $0.date < $1.date }
-        for (i, s) in sorted.enumerated() {
-            let x = plot.minX + CGFloat((s.date.timeIntervalSince1970 - tMin) / tRange) * plot.width
-            let y = plot.maxY - CGFloat((s.bpm - yMin) / (yMax - yMin)) * plot.height
-            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-            else { path.addLine(to: CGPoint(x: x, y: y)) }
+        if buckets.isEmpty {
+            let path = UIBezierPath()
+            for (i, s) in samples.enumerated() {
+                let p = CGPoint(x: xFor(s.date), y: yFor(s.bpm))
+                if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+            }
+            accentColor.setStroke()
+            path.lineWidth = 1.4
+            path.lineJoinStyle = .round
+            path.stroke()
+        } else {
+            let band = UIBezierPath()
+            for (i, b) in buckets.enumerated() {
+                let p = CGPoint(x: xFor(b.mid), y: yFor(b.maxBPM))
+                if i == 0 { band.move(to: p) } else { band.addLine(to: p) }
+            }
+            for b in buckets.reversed() {
+                band.addLine(to: CGPoint(x: xFor(b.mid), y: yFor(b.minBPM)))
+            }
+            band.close()
+            accentColor.withAlphaComponent(0.16).setFill()
+            band.fill()
+
+            let mean = UIBezierPath()
+            for (i, b) in buckets.enumerated() {
+                let p = CGPoint(x: xFor(b.mid), y: yFor(b.avgBPM))
+                if i == 0 { mean.move(to: p) } else { mean.addLine(to: p) }
+            }
+            accentColor.setStroke()
+            mean.lineWidth = 1.4
+            mean.lineJoinStyle = .round
+            mean.stroke()
+
+            drawString("shaded: min–max range • line: average", at: CGPoint(x: plot.maxX, y: rect.minY + 2), attrs: axisLabelAttrs, align: .right)
         }
-        lineColor.setStroke()
-        path.lineWidth = 1.4
-        path.stroke()
 
-        // Y-axis label
         drawString("BPM", at: CGPoint(x: rect.minX + 4, y: rect.minY + 2), attrs: [
             .font: UIFont.systemFont(ofSize: 9, weight: .semibold),
             .foregroundColor: labelColor,
-        ], align: .left)
+        ])
     }
 
     // MARK: - Per-day detail (24-hour chart)
 
+    private static let dayHeaderHeight: CGFloat = 34
+
     private static func drawDayHeader(day: DailyHeartRateStats, y: CGFloat) -> CGFloat {
         var y = y
-        let titleAttrs: [NSAttributedString.Key: Any] = [
+        y = drawString(weekdayDayFormatter.string(from: day.day), at: CGPoint(x: margin, y: y), attrs: [
             .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
             .foregroundColor: bodyColor,
-        ]
-        let dateStr = "\(weekdayName(day.day)), \(dayOnly(day.day))"
-        y = drawString(dateStr, at: CGPoint(x: margin, y: y), attrs: titleAttrs)
+        ])
 
         let statsStr = [
             "min \(intOrDash(day.minBPM))",
@@ -455,11 +571,10 @@ enum PDFExporter {
             "resting \(intOrDash(day.restingBPM))",
             "\(day.sampleCount) samples",
         ].joined(separator: "   •   ")
-        let statsAttrs: [NSAttributedString.Key: Any] = [
+        y = drawString(statsStr, at: CGPoint(x: margin, y: y), attrs: [
             .font: UIFont.systemFont(ofSize: 10),
             .foregroundColor: labelColor,
-        ]
-        y = drawString(statsStr, at: CGPoint(x: margin, y: y), attrs: statsAttrs)
+        ])
         return y + 4
     }
 
@@ -467,111 +582,108 @@ enum PDFExporter {
         samples: [HeartRateSample],
         dayStart: Date,
         averageBPM: Double?,
+        calendar: Calendar,
         in rect: CGRect
     ) {
         drawChartBackground(in: rect)
 
-        let padLeft: CGFloat = 40
-        let padRight: CGFloat = 12
-        let padTop: CGFloat = 10
-        let padBottom: CGFloat = 22
-
         let plot = CGRect(
-            x: rect.minX + padLeft,
-            y: rect.minY + padTop,
-            width: rect.width - padLeft - padRight,
-            height: rect.height - padTop - padBottom
+            x: rect.minX + 40,
+            y: rect.minY + 10,
+            width: rect.width - 52,
+            height: rect.height - 32
         )
 
+        // Use the real day length (23/25 h on DST changes).
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(86_400)
         let tMin = dayStart.timeIntervalSince1970
-        let tMax = tMin + 86400
-        let tRange = tMax - tMin
+        let tMax = dayEnd.timeIntervalSince1970
+        let tRange = max(tMax - tMin, 1)
 
-        // X ticks — every 3 hours across the full 24-hour day
-        let hourStride = 3
-        for hour in stride(from: 0, through: 24, by: hourStride) {
+        // X ticks — every 3 hours across the day
+        for hour in stride(from: 0, through: 24, by: 3) {
             let t = tMin + Double(hour) * 3600
+            guard t <= tMax + 1 else { break }
             let x = plot.minX + CGFloat((t - tMin) / tRange) * plot.width
-            drawVerticalLine(from: CGPoint(x: x, y: plot.maxY), to: CGPoint(x: x, y: plot.maxY + 3), color: axisColor)
-            let label = String(format: "%02d", hour % 24)
-            drawString(label, at: CGPoint(x: x, y: plot.maxY + 6), attrs: axisLabelAttrs, align: .center)
+            drawLine(from: CGPoint(x: x, y: plot.maxY), to: CGPoint(x: x, y: plot.maxY + 3), color: axisColor)
+            drawString(String(format: "%02d", hour % 24), at: CGPoint(x: x, y: plot.maxY + 6), attrs: axisLabelAttrs, align: .center)
         }
 
-        let daySamples = samples.filter {
-            let t = $0.date.timeIntervalSince1970
-            return t >= tMin && t <= tMax
-        }
+        let daySamples = samples
+            .filter { $0.date >= dayStart && $0.date < dayEnd }
+            .sorted { $0.date < $1.date }
 
         guard !daySamples.isEmpty else {
-            drawLine(from: CGPoint(x: plot.minX, y: plot.maxY), to: CGPoint(x: plot.maxX, y: plot.maxY), color: axisColor)
-            drawLine(from: CGPoint(x: plot.minX, y: plot.minY), to: CGPoint(x: plot.minX, y: plot.maxY), color: axisColor)
+            drawAxes(plot)
             drawCenteredText("No samples for this day.", in: plot)
             return
         }
 
-        let bpms = daySamples.map(\.bpm)
-        let (yMin, yMax, yTicks) = niceYAxis(min: bpms.min() ?? 40, max: bpms.max() ?? 160)
+        // Workouts record every few seconds; thin very dense days to
+        // 2-minute averages so the PDF stays small and readable.
+        let points: [(Date, Double)] = daySamples.count > 1440
+            ? HeartRateBucket.make(from: daySamples, start: dayStart, end: dayEnd, maxBuckets: 720).map { ($0.mid, $0.avgBPM) }
+            : daySamples.map { ($0.date, $0.bpm) }
 
-        // Y gridlines + labels
-        for tick in yTicks {
-            let y = plot.maxY - CGFloat((tick - yMin) / (yMax - yMin)) * plot.height
-            drawDashedHorizontalLine(from: CGPoint(x: plot.minX, y: y), to: CGPoint(x: plot.maxX, y: y), color: gridColor)
-            drawString("\(Int(tick))", at: CGPoint(x: rect.minX + 4, y: y - 6), attrs: axisLabelAttrs, align: .left)
+        let values = points.map { $0.1 }
+        let (yMin, yMax, yTicks) = niceYAxis(min: values.min() ?? 40, max: values.max() ?? 160)
+
+        func yFor(_ bpm: Double) -> CGFloat {
+            plot.maxY - CGFloat((bpm - yMin) / (yMax - yMin)) * plot.height
         }
 
-        // Average rule
-        if let avg = averageBPM, avg >= yMin, avg <= yMax {
-            let y = plot.maxY - CGFloat((avg - yMin) / (yMax - yMin)) * plot.height
-            drawDashedHorizontalLine(from: CGPoint(x: plot.minX, y: y), to: CGPoint(x: plot.maxX, y: y), color: UIColor.systemGray)
-            drawString("avg \(Int(avg))", at: CGPoint(x: plot.maxX - 44, y: y - 12), attrs: axisLabelAttrs, align: .left)
-        }
-
-        // Axes
-        drawLine(from: CGPoint(x: plot.minX, y: plot.maxY), to: CGPoint(x: plot.maxX, y: plot.maxY), color: axisColor)
-        drawLine(from: CGPoint(x: plot.minX, y: plot.minY), to: CGPoint(x: plot.minX, y: plot.maxY), color: axisColor)
+        drawYGrid(ticks: yTicks, yFor: yFor, plot: plot, labelX: rect.minX + 4)
+        drawAverageRule(averageBPM, yMin: yMin, yMax: yMax, yFor: yFor, plot: plot)
+        drawAxes(plot)
 
         // Scatter: faint connector + dot at each sample
-        let sorted = daySamples.sorted { $0.date < $1.date }
-
         let connector = UIBezierPath()
-        var points: [CGPoint] = []
-        points.reserveCapacity(sorted.count)
-        for (i, s) in sorted.enumerated() {
-            let x = plot.minX + CGFloat((s.date.timeIntervalSince1970 - tMin) / tRange) * plot.width
-            let y = plot.maxY - CGFloat((s.bpm - yMin) / (yMax - yMin)) * plot.height
-            let p = CGPoint(x: x, y: y)
-            points.append(p)
-            if i == 0 { connector.move(to: p) }
-            else { connector.addLine(to: p) }
+        var plotted: [CGPoint] = []
+        plotted.reserveCapacity(points.count)
+        for (i, point) in points.enumerated() {
+            let x = plot.minX + CGFloat((point.0.timeIntervalSince1970 - tMin) / tRange) * plot.width
+            let p = CGPoint(x: x, y: yFor(point.1))
+            plotted.append(p)
+            if i == 0 { connector.move(to: p) } else { connector.addLine(to: p) }
         }
-        lineColor.withAlphaComponent(0.22).setStroke()
+        accentColor.withAlphaComponent(0.22).setStroke()
         connector.lineWidth = 0.6
         connector.lineCapStyle = .round
         connector.stroke()
 
-        // Dots — scale slightly with density so dense days don't blob together
-        let dotRadius: CGFloat = sorted.count > 600 ? 1.2 : (sorted.count > 200 ? 1.5 : 1.9)
-        lineColor.setFill()
-        for p in points {
-            UIBezierPath(ovalIn: CGRect(
-                x: p.x - dotRadius,
-                y: p.y - dotRadius,
-                width: dotRadius * 2,
-                height: dotRadius * 2
-            )).fill()
+        // Dots — smaller on dense days so they don't blob together
+        let dotRadius: CGFloat = plotted.count > 600 ? 1.2 : (plotted.count > 200 ? 1.5 : 1.9)
+        accentColor.setFill()
+        for p in plotted {
+            UIBezierPath(ovalIn: CGRect(x: p.x - dotRadius, y: p.y - dotRadius, width: dotRadius * 2, height: dotRadius * 2)).fill()
         }
 
-        // Y-axis label
         drawString("BPM", at: CGPoint(x: rect.minX + 4, y: rect.minY + 2), attrs: [
             .font: UIFont.systemFont(ofSize: 9, weight: .semibold),
             .foregroundColor: labelColor,
-        ], align: .left)
+        ])
     }
 
-    private static func weekdayName(_ date: Date) -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEEE"
-        return fmt.string(from: date)
+    // MARK: - Chart helpers
+
+    private static func drawYGrid(ticks: [Double], yFor: (Double) -> CGFloat, plot: CGRect, labelX: CGFloat) {
+        for tick in ticks {
+            let y = yFor(tick)
+            drawDashedLine(from: CGPoint(x: plot.minX, y: y), to: CGPoint(x: plot.maxX, y: y), color: gridColor)
+            drawString("\(Int(tick))", at: CGPoint(x: labelX, y: y - 6), attrs: axisLabelAttrs)
+        }
+    }
+
+    private static func drawAverageRule(_ average: Double?, yMin: Double, yMax: Double, yFor: (Double) -> CGFloat, plot: CGRect) {
+        guard let avg = average, avg >= yMin, avg <= yMax else { return }
+        let y = yFor(avg)
+        drawDashedLine(from: CGPoint(x: plot.minX, y: y), to: CGPoint(x: plot.maxX, y: y), color: averageColor)
+        drawString("avg \(Int(avg.rounded()))", at: CGPoint(x: plot.maxX - 2, y: y - 12), attrs: axisLabelAttrs, align: .right)
+    }
+
+    private static func drawAxes(_ plot: CGRect) {
+        drawLine(from: CGPoint(x: plot.minX, y: plot.maxY), to: CGPoint(x: plot.maxX, y: plot.maxY), color: axisColor)
+        drawLine(from: CGPoint(x: plot.minX, y: plot.minY), to: CGPoint(x: plot.minX, y: plot.maxY), color: axisColor)
     }
 
     // MARK: - Drawing primitives
@@ -598,7 +710,7 @@ enum PDFExporter {
     }
 
     private static func drawChartBackground(in rect: CGRect) {
-        UIColor(white: 0.985, alpha: 1).setFill()
+        chartBackground.setFill()
         UIBezierPath(roundedRect: rect, cornerRadius: 6).fill()
     }
 
@@ -614,17 +726,11 @@ enum PDFExporter {
         )
     }
 
-    private static func drawHorizontalLine(at y: CGFloat, color: UIColor, dashed: Bool) {
-        let path = UIBezierPath()
-        path.move(to: CGPoint(x: margin, y: y))
-        path.addLine(to: CGPoint(x: pageWidth - margin, y: y))
-        if dashed { path.setLineDash([2, 3], count: 2, phase: 0) }
-        color.setStroke()
-        path.lineWidth = 0.5
-        path.stroke()
+    private static func drawHorizontalLine(at y: CGFloat, color: UIColor) {
+        drawLine(from: CGPoint(x: margin, y: y), to: CGPoint(x: pageWidth - margin, y: y), color: color, width: 0.5)
     }
 
-    private static func drawDashedHorizontalLine(from a: CGPoint, to b: CGPoint, color: UIColor) {
+    private static func drawDashedLine(from a: CGPoint, to b: CGPoint, color: UIColor) {
         let path = UIBezierPath()
         path.move(to: a)
         path.addLine(to: b)
@@ -634,16 +740,13 @@ enum PDFExporter {
         path.stroke()
     }
 
-    private static func drawLine(from a: CGPoint, to b: CGPoint, color: UIColor) {
+    private static func drawLine(from a: CGPoint, to b: CGPoint, color: UIColor, width: CGFloat = 0.6) {
         let path = UIBezierPath()
-        path.move(to: a); path.addLine(to: b)
+        path.move(to: a)
+        path.addLine(to: b)
         color.setStroke()
-        path.lineWidth = 0.6
+        path.lineWidth = width
         path.stroke()
-    }
-
-    private static func drawVerticalLine(from a: CGPoint, to b: CGPoint, color: UIColor) {
-        drawLine(from: a, to: b, color: color)
     }
 
     private static var axisLabelAttrs: [NSAttributedString.Key: Any] {
@@ -657,11 +760,8 @@ enum PDFExporter {
 
     private static func niceYAxis(min minV: Double, max maxV: Double) -> (Double, Double, [Double]) {
         let padding = max(5, (maxV - minV) * 0.1)
-        var lo = (minV - padding)
-        var hi = (maxV + padding)
-        // Round to nearest 10
-        lo = (lo / 10).rounded(.down) * 10
-        hi = (hi / 10).rounded(.up) * 10
+        var lo = ((minV - padding) / 10).rounded(.down) * 10
+        var hi = ((maxV + padding) / 10).rounded(.up) * 10
         if lo < 30 { lo = 30 }
         if hi - lo < 20 { hi = lo + 20 }
         let step = niceStep(for: hi - lo)
@@ -676,8 +776,7 @@ enum PDFExporter {
 
     private static func niceStep(for range: Double) -> Double {
         let approx = range / 5
-        let candidates: [Double] = [5, 10, 20, 25, 50]
-        for c in candidates where approx <= c { return c }
+        for c in [5.0, 10, 20, 25, 50] where approx <= c { return c }
         return 100
     }
 
@@ -695,19 +794,49 @@ enum PDFExporter {
         return values.reduce(0, +) / Double(values.count)
     }
 
-    private static func shortDate(_ date: Date) -> String {
+    // DateFormatter is expensive to create; these are only used for
+    // formatting, which is thread-safe.
+    private static let shortDateFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateStyle = .medium
         fmt.timeStyle = .short
-        return fmt.string(from: date)
-    }
+        return fmt
+    }()
 
-    private static func dayOnly(_ date: Date) -> String {
+    private static let dayOnlyFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateStyle = .medium
         fmt.timeStyle = .none
-        return fmt.string(from: date)
-    }
+        return fmt
+    }()
+
+    private static let weekdayDayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.setLocalizedDateFormatFromTemplate("EEEEMMMdy")
+        return fmt
+    }()
+
+    private static let axisDayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.setLocalizedDateFormatFromTemplate("MMMd")
+        return fmt
+    }()
+
+    private static let axisTimeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.setLocalizedDateFormatFromTemplate("jmm")
+        return fmt
+    }()
+
+    private static let fileStampFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd-HHmm"
+        return fmt
+    }()
+
+    private static func shortDate(_ date: Date) -> String { shortDateFormatter.string(from: date) }
+    private static func dayOnly(_ date: Date) -> String { dayOnlyFormatter.string(from: date) }
 
     // MARK: - Delta helpers
 
@@ -715,9 +844,9 @@ enum PDFExporter {
         case improvement, decline, neutral
         var color: UIColor {
             switch self {
-            case .improvement: return UIColor.systemGreen
-            case .decline:     return UIColor.systemOrange
-            case .neutral:     return UIColor.darkGray
+            case .improvement: return PDFExporter.improvementColor
+            case .decline:     return PDFExporter.declineColor
+            case .neutral:     return PDFExporter.labelColor
             }
         }
     }
@@ -745,7 +874,7 @@ enum PDFExporter {
         _ items: [(String, String, String?, DeltaKind?)],
         y: CGFloat
     ) -> CGFloat {
-        let colWidth = (pageWidth - margin * 2) / 2
+        let colWidth = contentWidth / 2
         let keyAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: labelColor,
@@ -775,7 +904,7 @@ enum PDFExporter {
         keyAttrs: [NSAttributedString.Key: Any],
         valAttrs: [NSAttributedString.Key: Any]
     ) {
-        (item.0 as NSString).draw(at: CGPoint(x: x, y: y), withAttributes: keyAttrs)
+        drawString(item.0, at: CGPoint(x: x, y: y), attrs: keyAttrs)
 
         let rightEdge = x + width - 4
         var valX = rightEdge
@@ -792,35 +921,38 @@ enum PDFExporter {
             valX = deltaOrigin.x - 6
         }
 
-        let valSize = (item.1 as NSString).size(withAttributes: valAttrs)
-        (item.1 as NSString).draw(at: CGPoint(x: valX - valSize.width, y: y), withAttributes: valAttrs)
+        drawString(item.1, at: CGPoint(x: valX, y: y), attrs: valAttrs, align: .right)
     }
 
     // MARK: - Zones
+
+    private static let zoneRowHeight: CGFloat = 14
 
     private static func drawZoneStackedBar(
         breakdown: ZoneBreakdown,
         in rect: CGRect,
         cornerRadius: CGFloat = 3
     ) {
-        // Background track
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let track = UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius)
         UIColor(white: 0.92, alpha: 1).setFill()
-        UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius).fill()
+        track.fill()
 
         guard breakdown.totalDuration > 0 else { return }
 
+        // Clip to the rounded track so the outer slices get rounded ends.
+        context.saveGState()
+        track.addClip()
         var cursor = rect.minX
         for zone in HeartRateZone.allCases {
             let frac = breakdown.fraction(zone)
             guard frac > 0 else { continue }
             let width = rect.width * CGFloat(frac)
-            let slice = CGRect(x: cursor, y: rect.minY, width: width, height: rect.height)
             zone.uiColor.setFill()
-            // Clip to rounded corners only on the outer slice edges; simple fill is fine since
-            // the track below already handles the rounding.
-            UIBezierPath(rect: slice).fill()
+            UIBezierPath(rect: CGRect(x: cursor, y: rect.minY, width: width, height: rect.height)).fill()
             cursor += width
         }
+        context.restoreGState()
     }
 
     private static func drawZoneTable(
@@ -842,43 +974,22 @@ enum PDFExporter {
         ]
 
         var y = y
-        let rowHeight: CGFloat = 14
         for zone in HeartRateZone.allCases {
-            // Swatch
-            let swatchRect = CGRect(x: margin, y: y + 2, width: 10, height: 10)
             zone.uiColor.setFill()
-            UIBezierPath(roundedRect: swatchRect, cornerRadius: 2).fill()
+            UIBezierPath(roundedRect: CGRect(x: margin, y: y + 2, width: 10, height: 10), cornerRadius: 2).fill()
 
-            // Zone label
-            (zone.label as NSString).draw(
-                at: CGPoint(x: margin + 16, y: y),
-                withAttributes: labelAttrs
-            )
+            drawString(zone.label, at: CGPoint(x: margin + 16, y: y), attrs: labelAttrs)
 
-            // BPM range
             let range = zone.range(maxHR: maxHR)
             let rangeText = zone == .peak ? "\(range.lowerBound)+ bpm" : "\(range.lowerBound)–\(range.upperBound) bpm"
-            (rangeText as NSString).draw(
-                at: CGPoint(x: margin + 100, y: y),
-                withAttributes: secondaryAttrs
-            )
+            drawString(rangeText, at: CGPoint(x: margin + 100, y: y), attrs: secondaryAttrs)
 
-            // Duration
-            let dur = DurationFormat.compact(breakdown.duration(zone))
-            (dur as NSString).draw(
-                at: CGPoint(x: margin + 220, y: y),
-                withAttributes: attrs
-            )
+            drawString(DurationFormat.compact(breakdown.duration(zone)), at: CGPoint(x: margin + 220, y: y), attrs: attrs)
 
-            // Percent
             let pct = "\(Int((breakdown.fraction(zone) * 100).rounded()))%"
-            let pctSize = (pct as NSString).size(withAttributes: labelAttrs)
-            (pct as NSString).draw(
-                at: CGPoint(x: pageWidth - margin - pctSize.width, y: y),
-                withAttributes: labelAttrs
-            )
+            drawString(pct, at: CGPoint(x: pageWidth - margin, y: y), attrs: labelAttrs, align: .right)
 
-            y += rowHeight
+            y += zoneRowHeight
         }
         return y
     }
