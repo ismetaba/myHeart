@@ -59,10 +59,16 @@ struct ContentView: View {
         .task { await startHealthIfReady() }
         // Ask for notification permission when it starts to matter — once
         // you follow someone — instead of on first launch with no context.
-        .onReceive(sharing.$followed.map { !$0.isEmpty }.removeDuplicates()) { isFollowing in
-            guard isFollowing else { return }
-            Task { await NotificationPermission.shared.requestIfNeeded() }
+        .onReceive(sharing.$followed.map { !$0.isEmpty }.removeDuplicates()) { _ in
+            requestNotificationsIfReady()
         }
+    }
+
+    /// Not over the welcome screen: the followed list can load from iCloud
+    /// before onboarding is finished.
+    private func requestNotificationsIfReady() {
+        guard didOnboard, !showOnboarding, !sharing.followed.isEmpty else { return }
+        Task { await NotificationPermission.shared.requestIfNeeded() }
     }
 
     private var currentEmergencyCount: Int {
@@ -78,6 +84,7 @@ struct ContentView: View {
         }
         if didOnboard {
             didStartHealth = true
+            requestNotificationsIfReady()
             await loadHealthData(authorized: await viewModel.authorize())
         } else {
             showOnboarding = true
@@ -90,6 +97,7 @@ struct ContentView: View {
         let authorized = await viewModel.authorize()
         didOnboard = true
         showOnboarding = false
+        requestNotificationsIfReady()
         await loadHealthData(authorized: authorized)
     }
 

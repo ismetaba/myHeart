@@ -109,6 +109,9 @@ struct FollowDetailView: View {
             }
         }
         .refreshable { await refreshNow() }
+        // Silent pushes, foreground refreshes and the Family list also update
+        // `sharing.followed`; take newer data from there between polls.
+        .onChange(of: liveEntry?.lastFetchedAt) { _ in adoptLiveEntry() }
         // The confirmation has been seen once the user leaves this screen.
         .onDisappear {
             if sharing.justFollowedID == current.id { sharing.justFollowedID = nil }
@@ -671,6 +674,20 @@ struct FollowDetailView: View {
     }
 
     // MARK: Refresh
+
+    private var liveEntry: FollowedPerson? {
+        sharing.followed.first { $0.id == current.id }
+    }
+
+    private func adoptLiveEntry() {
+        guard let live = liveEntry, live.lastFetchedAt > current.lastFetchedAt else { return }
+        let wasEmergency = current.status.isEmergency
+        withAnimation { current = live }
+        refreshFailed = false
+        if !wasEmergency && live.status.isEmergency {
+            announceEmergency(live.status)
+        }
+    }
 
     private func refreshNow() async {
         let result = await sharing.refreshFollowed(person: current)

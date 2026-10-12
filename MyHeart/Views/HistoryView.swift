@@ -7,6 +7,7 @@ struct HistoryView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    @State private var searchText: String = ""
     @State private var sourceFilter: String?
     @State private var zoneFilter: HeartRateZone?
     @State private var onlyElevated: Bool = false
@@ -40,6 +41,8 @@ struct HistoryView: View {
                 .navigationTitle("History")
                 .toolbar { toolbarContent }
                 .refreshable { await pullToRefresh() }
+                .searchable(text: $searchText, prompt: "Search sources")
+                .onChange(of: searchText) { _ in resetPaging() }
                 // Reset paging only when the dataset itself changes, not when
                 // a new Watch sample arrives while you're reading older data.
                 .onChange(of: sourceFilter) { _ in resetPaging() }
@@ -61,9 +64,14 @@ struct HistoryView: View {
                     // refreshes keep the empty state (and its buttons) still.
                     && (viewModel.isFirstLoadPending || viewModel.isSwitchingRange
                         || viewModel.isSwitchingDailyRange) {
-            ProgressView("Loading heart rate…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(.systemGroupedBackground))
+            // Scrollable so pull-to-refresh still works if loading stalls.
+            GeometryReader { geo in
+                ScrollView {
+                    ProgressView("Loading heart rate…")
+                        .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                }
+            }
+            .background(Color(.systemGroupedBackground))
         } else if currentSamples.isEmpty {
             // A scroll view (not a plain stack) so pull-to-refresh works here too.
             GeometryReader { geo in
@@ -108,9 +116,16 @@ struct HistoryView: View {
             // The rows' range, which trails the menu while a switch loads or after it failed.
             return viewModel.loadedRange.fullTitle
         case .daily:
+            // Same idea: describe the days the rows actually come from.
             let style = Date.FormatStyle.dateTime.month(.abbreviated).day()
-            return "\(viewModel.dailyStart.formatted(style)) – \(viewModel.dailyEnd.formatted(style))"
+            let start = viewModel.loadedDailyStart ?? viewModel.dailyStart
+            let end = viewModel.loadedDailyEnd ?? viewModel.dailyEnd
+            return "\(start.formatted(style)) – \(end.formatted(style))"
         }
+    }
+
+    private var trimmedSearch: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The next longer range, offered when the current one has no data.
@@ -123,10 +138,12 @@ struct HistoryView: View {
 
     private var activeFilterCount: Int {
         (sourceFilter == nil ? 0 : 1) + (zoneFilter == nil ? 0 : 1) + (onlyElevated ? 1 : 0)
+            + (trimmedSearch.isEmpty ? 0 : 1)
     }
 
     private var filterSummary: String {
         var parts: [String] = []
+        if !trimmedSearch.isEmpty { parts.append("“\(trimmedSearch)”") }
         if let sourceFilter { parts.append(sourceFilter) }
         if let zoneFilter { parts.append(zoneFilter.label) }
         if onlyElevated { parts.append("≥ \(profile.elevatedThreshold) bpm") }
@@ -138,6 +155,10 @@ struct HistoryView: View {
         var result = currentSamples
         if let sourceFilter {
             result = result.filter { $0.source == sourceFilter }
+        }
+        let query = trimmedSearch
+        if !query.isEmpty {
+            result = result.filter { $0.source.localizedCaseInsensitiveContains(query) }
         }
         if let zoneFilter {
             let maxHR = profile.maxHR
@@ -208,6 +229,7 @@ struct HistoryView: View {
     }
 
     private func clearFilters() {
+        searchText = ""
         sourceFilter = nil
         zoneFilter = nil
         onlyElevated = false

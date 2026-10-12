@@ -556,12 +556,19 @@ struct DashboardView: View {
         }
         .padding()
         .cardBackground()
+        // Two DashboardViews share one view model (Heart tab + pushed from
+        // the Health tab), so always pick up the range the other one set.
+        // The echo is harmless: setDailyRange ignores unchanged ranges.
         .onAppear {
-            if !didInitDates {
-                localStart = viewModel.dailyStart
-                localEnd = viewModel.dailyEnd
-                didInitDates = true
-            }
+            if localStart != viewModel.dailyStart { localStart = viewModel.dailyStart }
+            if localEnd != viewModel.dailyEnd { localEnd = viewModel.dailyEnd }
+            didInitDates = true
+        }
+        .onChange(of: viewModel.dailyStart) { newStart in
+            if localStart != newStart { localStart = newStart }
+        }
+        .onChange(of: viewModel.dailyEnd) { newEnd in
+            if localEnd != newEnd { localEnd = newEnd }
         }
         // Apply as soon as the range changes. Observing both dates together
         // means a preset (or a clamp that moves the other date) triggers a

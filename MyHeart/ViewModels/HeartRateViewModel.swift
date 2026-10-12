@@ -44,15 +44,21 @@ final class HeartRateViewModel: ObservableObject {
     /// HealthKit doesn't exist on this device (e.g. iPad on iPadOS 16).
     @Published private(set) var healthUnavailable = false
 
+    /// True once a load (or the authorization attempt) has finished, either
+    /// way. Tracked explicitly: deriving it from the error fields would bring
+    /// the loading state back when the user dismisses an error.
+    @Published private(set) var hasAttemptedLoad = false
+
     /// Nothing has loaded yet — show placeholders / spinners, not "no data".
     var isFirstLoadPending: Bool {
-        lastRefresh == nil && errorMessage == nil && authorizationError == nil && !healthUnavailable
+        !hasAttemptedLoad && !healthUnavailable
     }
 
     /// A new overall range is loading while the previous range's data is
-    /// still on screen. Plain refreshes of the same range don't count.
+    /// still on screen (or overall data was never loaded, e.g. the app
+    /// started in By Day). Plain refreshes of the same range don't count.
     var isSwitchingRange: Bool {
-        isLoading && mode == .overall && loadedRange != selectedRange
+        isLoading && mode == .overall && (!hasLoadedOverall || loadedRange != selectedRange)
     }
 
     /// Daily-mode counterpart of `isSwitchingRange`.
@@ -131,6 +137,9 @@ final class HeartRateViewModel: ObservableObject {
     private var generation = 0
     /// Foreground refreshes wait until HealthKit authorization was requested.
     private var hasBootstrapped = false
+    /// The last authorization request threw; foreground refreshes retry it.
+    private var authorizationFailed = false
+    private var hasLoadedOverall = false
 
     init(
         health: HealthKitManager = .shared,
@@ -183,9 +192,15 @@ final class HeartRateViewModel: ObservableObject {
             healthUnavailable = true
             return false
         } catch {
-            authorizationError = error.localizedDescription
+            // Alert once; silent retries happen on later foregrounds.
+            if !authorizationFailed {
+                authorizationError = error.localizedDescription
+            }
+            authorizationFailed = true
+            hasAttemptedLoad = true
             return false
         }
+        authorizationFailed = false
         hasBootstrapped = true
         await LiveStatusPublisher.shared.start()
         return true
@@ -207,18 +222,27 @@ final class HeartRateViewModel: ObservableObject {
             guard myGeneration == generation else { return }
             lastRefresh = Date()
             errorMessage = nil
+            hasAttemptedLoad = true
         } catch {
             guard myGeneration == generation else { return }
             // Locked phone → HealthKit is unreadable for a moment. Not an error
             // worth showing; the next foreground refresh will succeed.
             if HealthKitError.isProtectedDataUnavailable(error) { return }
             errorMessage = error.localizedDescription
+            hasAttemptedLoad = true
         }
     }
 
     /// Foreground refresh, skipped when the data is still recent.
     func refreshIfStale(maxAge: TimeInterval = 60) async {
-        guard hasBootstrapped, !isLoading else { return }
+        guard !isLoading else { return }
+        guard hasBootstrapped else {
+            // Authorization threw earlier (e.g. a restricted device): try again.
+            if authorizationFailed, await authorize() {
+                await refresh()
+            }
+            return
+        }
         if let lastRefresh, Date().timeIntervalSince(lastRefresh) < maxAge { return }
         await refresh()
     }
@@ -231,6 +255,9 @@ final class HeartRateViewModel: ObservableObject {
     func setMode(_ newMode: ReportMode) async {
         guard newMode != mode else { return }
         mode = newMode
+        // Insights and sources are shared between modes: rebuild them from
+        // the new mode's cached data now, not after the reload finishes.
+        recomputeDerived()
         await refresh()
     }
 
@@ -282,6 +309,7 @@ final class HeartRateViewModel: ObservableObject {
         guard myGeneration == generation else { return }
 
         loadedRange = range
+        hasLoadedOverall = true
         samples = fetched
         chartBuckets = fetched.count > Self.rawChartLimit
             ? HeartRateBucket.make(from: fetched, start: start, end: end, maxBuckets: Self.chartBucketCount)
