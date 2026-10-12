@@ -134,7 +134,7 @@ struct OverviewView: View {
                                 .font(.system(size: 36, weight: .bold, design: .rounded))
                                 .foregroundStyle(.indigo)
                                 .monospacedDigit()
-                            Text("asleep last night")
+                            Text(sleep.isInBedOnly ? "in bed last night" : "asleep last night")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -143,9 +143,14 @@ struct OverviewView: View {
                             .frame(height: 10)
 
                         HStack(spacing: 14) {
-                            phaseLabel(.core, seconds: sleep.core)
-                            phaseLabel(.deep, seconds: sleep.deep)
-                            phaseLabel(.rem,  seconds: sleep.rem)
+                            if sleep.hasStages {
+                                phaseLabel(.core, seconds: sleep.core)
+                                phaseLabel(.deep, seconds: sleep.deep)
+                                phaseLabel(.rem,  seconds: sleep.rem)
+                            }
+                            if sleep.unspecified > 0 {
+                                phaseLabel(.asleep, seconds: sleep.unspecified)
+                            }
                             phaseLabel(.awake, seconds: sleep.awake)
                         }
 
@@ -445,12 +450,13 @@ struct OverviewView: View {
 // MARK: - Sleep phase helper
 
 enum SleepPhase {
-    case core, deep, rem, awake, inBed
+    case core, deep, rem, asleep, awake, inBed
     var label: String {
         switch self {
         case .core: return "Core"
         case .deep: return "Deep"
         case .rem:  return "REM"
+        case .asleep: return "Asleep"
         case .awake: return "Awake"
         case .inBed: return "In Bed"
         }
@@ -460,6 +466,7 @@ enum SleepPhase {
         case .core: return .blue
         case .deep: return .indigo
         case .rem:  return .mint
+        case .asleep: return .cyan
         case .awake: return .pink.opacity(0.7)
         case .inBed: return .gray
         }
@@ -705,31 +712,58 @@ struct MiniMetricTile: View {
     }
 }
 
-/// Compact sparkline used on cards.
+/// Compact sparkline used on cards. The y-axis is fitted to the data so a
+/// resting HR moving between 55 and 62 is visible instead of a flat line.
 struct TrendSparkline: View {
     let points: [MetricPoint]
     let color: Color
 
     var body: some View {
+        let domain = yDomain
         Chart {
             ForEach(points) { p in
+                AreaMark(
+                    x: .value("date", p.date),
+                    yStart: .value("base", domain.lowerBound),
+                    yEnd: .value("value", p.value)
+                )
+                .interpolationMethod(.monotone)
+                .foregroundStyle(LinearGradient(
+                    colors: [color.opacity(0.35), color.opacity(0)],
+                    startPoint: .top, endPoint: .bottom
+                ))
                 LineMark(x: .value("date", p.date), y: .value("value", p.value))
                     .interpolationMethod(.monotone)
                     .foregroundStyle(color)
                     .lineStyle(StrokeStyle(lineWidth: 1.5))
-                AreaMark(x: .value("date", p.date), y: .value("value", p.value))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(LinearGradient(
-                        colors: [color.opacity(0.35), color.opacity(0)],
-                        startPoint: .top, endPoint: .bottom
-                    ))
+            }
+            if points.count == 1, let only = points.first {
+                PointMark(x: .value("date", only.date), y: .value("value", only.value))
+                    .foregroundStyle(color)
+                    .symbolSize(16)
             }
         }
+        .chartYScale(domain: domain)
         .chartYAxis(.hidden)
         .chartXAxis(.hidden)
         .chartPlotStyle { plot in
             plot.padding(.vertical, 2)
         }
+        .accessibilityHidden(true)
+    }
+
+    private var yDomain: ClosedRange<Double> {
+        let values = points.map(\.value)
+        guard let lo = values.min(), let hi = values.max() else { return 0...1 }
+        if hi - lo < 0.0001 {
+            // Flat series: centre it.
+            let pad = max(abs(hi) * 0.05, 1)
+            return (lo - pad)...(hi + pad)
+        }
+        let pad = (hi - lo) * 0.15
+        // Counts (steps, kcal) never go below zero.
+        let lower = lo >= 0 ? max(0, lo - pad) : lo - pad
+        return lower...(hi + pad)
     }
 }
 
@@ -739,20 +773,28 @@ struct SleepPhaseBar: View {
 
     var body: some View {
         GeometryReader { geo in
-            let total = max(sleep.asleep + sleep.awake, 1)
-            HStack(spacing: 1) {
-                segment(color: SleepPhase.awake.color, fraction: sleep.awake / total, width: geo.size.width)
-                segment(color: SleepPhase.core.color, fraction: sleep.core / total, width: geo.size.width)
-                segment(color: SleepPhase.deep.color, fraction: sleep.deep / total, width: geo.size.width)
-                segment(color: SleepPhase.rem.color,  fraction: sleep.rem / total, width: geo.size.width)
+            let parts: [(Color, TimeInterval)] = sleep.isInBedOnly
+                ? [(SleepPhase.inBed.color, sleep.inBed)]
+                : [
+                    (SleepPhase.awake.color, sleep.awake),
+                    (SleepPhase.core.color, sleep.core),
+                    (SleepPhase.deep.color, sleep.deep),
+                    (SleepPhase.rem.color, sleep.rem),
+                    (SleepPhase.asleep.color, sleep.unspecified),
+                ]
+            let visible = parts.filter { $0.1 > 0 }
+            let total = max(visible.reduce(0) { $0 + $1.1 }, 1)
+            let spacing: CGFloat = 1
+            let usable = max(0, geo.size.width - spacing * CGFloat(max(visible.count - 1, 0)))
+            HStack(spacing: spacing) {
+                ForEach(Array(visible.enumerated()), id: \.offset) { _, part in
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(part.0)
+                        .frame(width: usable * CGFloat(part.1 / total))
+                }
             }
         }
-    }
-
-    private func segment(color: Color, fraction: Double, width: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(color)
-            .frame(width: max(0, CGFloat(fraction) * width - 1))
+        .accessibilityHidden(true)
     }
 }
 

@@ -50,7 +50,7 @@ struct SettingsView: View {
         } header: {
             Text("Emergency")
         } footer: {
-            Text("When your heart rate crosses a critical threshold (or stays above the sustained threshold for 10+ minutes) family members get a time-sensitive alert that breaks through Focus modes. If a phone is set, watchers see a one-tap Call button on your profile.")
+            Text("While you share live, a critical reading (or \(max(profile.elevatedThreshold, 120))+ bpm for 10+ minutes) sends family members a time-sensitive alert. The contact above is shared with the people you invite so they can call it in one tap. Readings during a workout can trigger this too.")
         }
     }
 
@@ -59,7 +59,7 @@ struct SettingsView: View {
             HStack {
                 Text("Display Name")
                 Spacer()
-                TextField("Your name", text: $profile.displayName)
+                TextField(UIDevice.current.name, text: $profile.displayName)
                     .multilineTextAlignment(.trailing)
                     .textContentType(.name)
                     .submitLabel(.done)
@@ -68,7 +68,7 @@ struct SettingsView: View {
         } header: {
             Text("Live Sharing")
         } footer: {
-            Text("This is the name family members see when you share your heart live. Defaults to your device name.")
+            Text("This is the name family members see when you share your heart live. Leave it empty to use your device name.")
         }
     }
 
@@ -178,11 +178,11 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section {
             LabeledRow(label: "Version", value: appVersion)
-            LabeledRow(label: "Data", value: "On-device only")
+            LabeledRow(label: "Data", value: "Apple Health + your iCloud")
         } header: {
             Text("About")
         } footer: {
-            Text("MyHeart reads heart rate, resting heart rate, and HRV from Apple Health. Nothing leaves your device — reports are generated locally and shared only when you tap Export.")
+            Text("MyHeart reads your data from Apple Health and never writes to it. Reports are generated on this device and shared only when you tap Export. Live sharing, when you turn it on, stores your latest reading in your own iCloud account and is visible only to people with your invite link — there is no MyHeart server.")
         }
     }
 

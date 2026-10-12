@@ -3,19 +3,25 @@ import Charts
 import UserNotifications
 
 /// Detail for one followed person. Auto-refreshes while visible so the live
-/// BPM stays current. Throttles to 30s refreshes to align with the writer
-/// side's publish cadence.
+/// BPM stays current, aligned with the sharer's 30s publish cadence.
 struct FollowDetailView: View {
     @EnvironmentObject private var sharing: LiveSharingService
-    @EnvironmentObject private var profile: UserProfile
+    @Environment(\.dismiss) private var dismiss
     @State private var current: FollowedPerson
-    @State private var refreshTimer: Timer?
     @State private var showUnfollowConfirm = false
     @AppStorage private var alertThreshold: Int
+    @AppStorage private var alertsEnabled: Bool
 
     init(person: FollowedPerson) {
         self._current = State(initialValue: person)
-        self._alertThreshold = AppStorage(wrappedValue: 130, "follow.alert.\(person.id)")
+        self._alertThreshold = AppStorage(
+            wrappedValue: FollowAlertSettings.defaultThreshold,
+            FollowAlertSettings.thresholdKey(person.id)
+        )
+        self._alertsEnabled = AppStorage(
+            wrappedValue: true,
+            FollowAlertSettings.enabledKey(person.id)
+        )
     }
 
     var body: some View {
@@ -24,7 +30,7 @@ struct FollowDetailView: View {
                 if current.status.isEmergency { emergencyBanner }
                 heroCard
                 statsRow
-                if !current.status.trendHourlyBPM.isEmpty { trendCard }
+                if current.status.trendHourlyBPM.contains(where: { $0 > 0 }) { trendCard }
                 alertsCard
                 emergencyContactCard
                 metaCard
@@ -45,6 +51,7 @@ struct FollowDetailView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("More")
             }
         }
         .confirmationDialog(
@@ -53,12 +60,21 @@ struct FollowDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Stop Following", role: .destructive) {
-                Task { await sharing.unfollow(current) }
+                Task {
+                    if await sharing.unfollow(current) {
+                        dismiss()
+                    }
+                }
             }
             Button("Cancel", role: .cancel) {}
         }
-        .onAppear { startAutoRefresh() }
-        .onDisappear { stopAutoRefresh() }
+        // Polls while visible; SwiftUI cancels the task when the view goes away.
+        .task {
+            while !Task.isCancelled {
+                await refreshNow()
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+            }
+        }
         .refreshable { await refreshNow() }
     }
 
@@ -78,16 +94,21 @@ struct FollowDetailView: View {
                             .font(.caption2)
                             .opacity(0.9)
                     }
+                    if current.status.isStale {
+                        Text("No new readings for \(current.status.updatedAt, style: .relative) — this may be outdated.")
+                            .font(.caption2)
+                            .opacity(0.9)
+                    }
                 }
                 Spacer()
             }
-            if profile.hasEmergencyContact {
+            if current.status.hasEmergencyContact {
                 Button {
                     callEmergencyContact()
                 } label: {
                     HStack {
                         Image(systemName: "phone.fill")
-                        Text("Call \(profile.emergencyContactName.isEmpty ? profile.emergencyContact : profile.emergencyContactName)")
+                        Text("Call \(contactDisplayName)")
                             .fontWeight(.semibold)
                         Spacer()
                     }
@@ -101,8 +122,13 @@ struct FollowDetailView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.red))
+        .background(RoundedRectangle(cornerRadius: 16).fill(current.status.isStale ? Color.red.opacity(0.7) : Color.red))
         .foregroundStyle(.white)
+    }
+
+    private var contactDisplayName: String {
+        let name = current.status.emergencyContactName ?? ""
+        return name.isEmpty ? (current.status.emergencyContactPhone ?? "") : name
     }
 
     // MARK: Hero
@@ -110,15 +136,16 @@ struct FollowDetailView: View {
     private var heroCard: some View {
         VStack(spacing: 12) {
             HStack {
+                let liveColor: Color = current.status.isStale ? .orange : .green
                 Circle()
-                    .fill(.green)
+                    .fill(liveColor)
                     .frame(width: 9, height: 9)
-                    .overlay(Circle().stroke(Color.green.opacity(0.35), lineWidth: 4).scaleEffect(1.6))
-                Text("Live")
+                    .overlay(Circle().stroke(liveColor.opacity(0.35), lineWidth: 4).scaleEffect(1.6))
+                Text(current.status.isStale ? "Not live" : "Live")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(liveColor)
                 Spacer()
-                Text("Updated \(current.status.updatedAt, style: .relative) ago")
+                Text("Measured \(current.status.updatedAt, style: .relative) ago")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -126,7 +153,7 @@ struct FollowDetailView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("\(current.status.currentBPM)")
                     .font(.system(size: 96, weight: .bold, design: .rounded))
-                    .foregroundStyle(current.status.isEmergency ? .red : (current.status.isElevated ? .orange : .pink))
+                    .foregroundStyle(current.status.isEmergency ? Color.red : (current.status.isElevated ? Color.orange : Color.pink))
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 Text("BPM")
@@ -139,7 +166,7 @@ struct FollowDetailView: View {
             if current.status.isStale {
                 HStack(spacing: 6) {
                     Image(systemName: "clock.arrow.circlepath")
-                    Text("Last update over 5 minutes ago")
+                    Text("No new reading for over \(Int(LiveHeartStatus.staleAfter / 60)) minutes")
                 }
                 .font(.caption)
                 .foregroundStyle(.orange)
@@ -214,42 +241,65 @@ struct FollowDetailView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
     }
 
-    private var trendChart: some View {
+    /// Hourly averages, oldest → newest. The last value is the hour the
+    /// sharer's phone computed the trend in (`trendUpdatedAt`), not "now" —
+    /// otherwise an old trend would be drawn against the wrong hours.
+    private var trendPoints: [(date: Date, bpm: Double)] {
         let trend = current.status.trendHourlyBPM
-        let baseHour = Calendar.current.date(byAdding: .hour, value: -(trend.count - 1), to: Date()) ?? Date()
-        let points: [(Date, Int)] = trend.enumerated().map { idx, v in
-            (Calendar.current.date(byAdding: .hour, value: idx, to: baseHour) ?? baseHour, v)
+        let cal = Calendar.current
+        let reference = current.status.trendUpdatedAt ?? current.status.updatedAt
+        let lastHour = cal.dateInterval(of: .hour, for: reference)?.start ?? reference
+        let firstHour = cal.date(byAdding: .hour, value: -(trend.count - 1), to: lastHour) ?? lastHour
+        return trend.enumerated().compactMap { idx, value in
+            guard value > 0, let date = cal.date(byAdding: .hour, value: idx, to: firstHour) else { return nil }
+            // Plot in the middle of the hour the average belongs to.
+            return (date: date.addingTimeInterval(30 * 60), bpm: Double(value))
         }
-        return Chart {
-            ForEach(Array(points.enumerated()), id: \.offset) { _, pair in
-                if pair.1 > 0 {
-                    LineMark(
-                        x: .value("Hour", pair.0),
-                        y: .value("BPM", pair.1)
-                    )
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(.pink)
-                    .lineStyle(StrokeStyle(lineWidth: 1.8))
+    }
 
-                    AreaMark(
-                        x: .value("Hour", pair.0),
-                        y: .value("BPM", pair.1)
+    private var trendChart: some View {
+        let points = trendPoints
+        let values = points.map { $0.bpm }
+        let lo = (values.min() ?? 50) - 8
+        let hi = (values.max() ?? 120) + 8
+        return Chart {
+            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                AreaMark(
+                    x: .value("Hour", point.date),
+                    yStart: .value("Base", lo),
+                    yEnd: .value("BPM", point.bpm)
+                )
+                .interpolationMethod(.monotone)
+                .foregroundStyle(LinearGradient(
+                    colors: [.pink.opacity(0.35), .pink.opacity(0)],
+                    startPoint: .top, endPoint: .bottom
+                ))
+
+                LineMark(
+                    x: .value("Hour", point.date),
+                    y: .value("BPM", point.bpm)
+                )
+                .interpolationMethod(.monotone)
+                .foregroundStyle(.pink)
+                .lineStyle(StrokeStyle(lineWidth: 1.8))
+
+                if points.count < 3 {
+                    PointMark(
+                        x: .value("Hour", point.date),
+                        y: .value("BPM", point.bpm)
                     )
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(LinearGradient(
-                        colors: [.pink.opacity(0.35), .pink.opacity(0)],
-                        startPoint: .top, endPoint: .bottom
-                    ))
+                    .foregroundStyle(.pink)
                 }
             }
         }
+        .chartYScale(domain: max(0, lo)...max(lo + 10, hi))
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
                     .foregroundStyle(.gray.opacity(0.3))
                 AxisValueLabel {
-                    if let v = value.as(Int.self) {
-                        Text("\(v)").font(.caption2).foregroundStyle(.secondary)
+                    if let v = value.as(Double.self) {
+                        Text("\(Int(v))").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -278,15 +328,19 @@ struct FollowDetailView: View {
                 Spacer()
             }
 
-            Stepper(value: $alertThreshold, in: 60...200, step: 5) {
-                VStack(alignment: .leading, spacing: 2) {
+            Toggle(isOn: $alertsEnabled) {
+                Text("High heart-rate alerts")
+                    .font(.subheadline.weight(.medium))
+            }
+            if alertsEnabled {
+                Stepper(value: $alertThreshold, in: 60...200, step: 5) {
                     Text("Notify me if BPM ≥ \(alertThreshold)")
-                        .font(.subheadline.weight(.medium))
-                    Text("Alerts fire even when MyHeart is closed, via silent CloudKit push and a background refresh every ~15 min.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
                 }
             }
+            Text("Emergency alerts are always on. Alerts also arrive when MyHeart is closed (via iCloud push and background refresh), though iOS may delay them.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -297,10 +351,10 @@ struct FollowDetailView: View {
 
     @ViewBuilder
     private var emergencyContactCard: some View {
-        if profile.hasEmergencyContact {
+        if current.status.hasEmergencyContact {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Label("Emergency Contact", systemImage: "phone.fill")
+                    Label("\(current.status.displayName)'s Emergency Contact", systemImage: "phone.fill")
                         .font(.headline)
                         .foregroundStyle(.red)
                     Spacer()
@@ -311,11 +365,13 @@ struct FollowDetailView: View {
                     HStack {
                         Image(systemName: "phone.fill")
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(profile.emergencyContactName.isEmpty ? "Call Emergency Contact" : profile.emergencyContactName)
+                            Text(contactDisplayName)
                                 .fontWeight(.semibold)
-                            Text(profile.emergencyContact)
-                                .font(.caption2)
-                                .opacity(0.9)
+                            if let name = current.status.emergencyContactName, !name.isEmpty {
+                                Text(current.status.emergencyContactPhone ?? "")
+                                    .font(.caption2)
+                                    .opacity(0.9)
+                            }
                         }
                         Spacer()
                     }
@@ -338,7 +394,7 @@ struct FollowDetailView: View {
             metaRow("Source", value: current.status.deviceName ?? "Unknown device")
             metaRow("Zone range", value: zoneRangeText)
             metaRow("Elevated above", value: "\(current.status.elevatedThreshold) bpm")
-            metaRow("Record ID", value: current.status.id)
+            metaRow("Checked", value: current.lastFetchedAt.formatted(date: .omitted, time: .shortened))
         }
         .font(.caption)
         .padding()
@@ -364,31 +420,18 @@ struct FollowDetailView: View {
     // MARK: Actions
 
     private func callEmergencyContact() {
-        let digits = profile.emergencyContact.filter { "+0123456789".contains($0) }
-        guard !digits.isEmpty,
-              let url = URL(string: "tel://\(digits)"),
-              UIApplication.shared.canOpenURL(url) else { return }
+        let raw = current.status.emergencyContactPhone ?? ""
+        let digits = raw.filter { "+0123456789".contains($0) }
+        guard !digits.isEmpty, let url = URL(string: "tel:\(digits)") else { return }
         UIApplication.shared.open(url)
     }
 
     // MARK: Refresh
 
-    private func startAutoRefresh() {
-        refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
-            Task { await refreshNow() }
-        }
-        Task { await refreshNow() }
-    }
-
-    private func stopAutoRefresh() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-    }
-
     private func refreshNow() async {
         if let updated = await sharing.refreshFollowed(person: current) {
             withAnimation { current = updated }
+            await sharing.evaluateAlerts()
         }
     }
 }

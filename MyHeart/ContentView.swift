@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: HeartRateViewModel
@@ -10,7 +11,9 @@ struct ContentView: View {
             OverviewView()
                 .tabItem { Label("Health", systemImage: "heart.text.square.fill") }
 
-            DashboardView()
+            // DashboardView is also pushed from the Health tab, so it doesn't
+            // own a NavigationStack itself (nested stacks break navigation).
+            NavigationStack { DashboardView() }
                 .tabItem { Label("Heart", systemImage: "heart.fill") }
 
             FamilyView()
@@ -25,9 +28,12 @@ struct ContentView: View {
         .tint(.pink)
         .alert(
             "Health Access Needed",
-            isPresented: .constant(viewModel.authorizationError != nil),
+            isPresented: Binding(
+                get: { viewModel.authorizationError != nil },
+                set: { if !$0 { viewModel.authorizationError = nil } }
+            ),
             actions: {
-                Button("OK") { viewModel.authorizationError = nil }
+                Button("OK", role: .cancel) {}
             },
             message: { Text(viewModel.authorizationError ?? "") }
         )
@@ -41,8 +47,6 @@ struct ContentView: View {
         _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
     }
 }
-
-import UserNotifications
 
 #Preview {
     ContentView()

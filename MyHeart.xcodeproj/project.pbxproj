@@ -36,6 +36,7 @@
 		FB3B0A21BCDF3A0ADBBCC8F0 /* HealthOverviewViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D797B8F15203753B7589BB18 /* HealthOverviewViewModel.swift */; };
 		FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */; };
 		FBF5A55538FDE3321ED97729 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E369644295D6CE6002655054 /* SettingsView.swift */; };
+		5A1E7C3B9D2F4E6A8B0C1D2E /* LiveStatusPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2F8D4CAE3F5F7B9C1D2E3F /* LiveStatusPublisher.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -71,6 +72,7 @@
 		E7FF79612998201836E99C38 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		EAEE3299B124B2271EBAD0D8 /* MyHeart.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyHeart.entitlements; sourceTree = "<group>"; };
 		EC762F303F149D7C079ABB11 /* HeartRateZone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateZone.swift; sourceTree = "<group>"; };
+		6B2F8D4CAE3F5F7B9C1D2E3F /* LiveStatusPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveStatusPublisher.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -122,6 +124,7 @@
 				4A8D1AA2094D159CEBF63C0F /* LiveSharingService.swift */,
 				C56E33C8268D41C24A776B1C /* LiveSharingService+Subscriptions.swift */,
 				1DB94CF65C64D810A564491E /* LiveSharingService+Watcher.swift */,
+				6B2F8D4CAE3F5F7B9C1D2E3F /* LiveStatusPublisher.swift */,
 				7D7487AAD9F09504367E62C4 /* PDFExporter.swift */,
 				E626A653617AE06A51AA1168 /* SharingError.swift */,
 			);
@@ -262,6 +265,7 @@
 				EC148D3357E90B01F5749D8D /* LiveSharingService+Subscriptions.swift in Sources */,
 				70ECFD9C635CBEF5C6BCE960 /* LiveSharingService+Watcher.swift in Sources */,
 				BF818DA351E4AD2DC02B5CF3 /* LiveSharingService.swift in Sources */,
+				5A1E7C3B9D2F4E6A8B0C1D2E /* LiveStatusPublisher.swift in Sources */,
 				FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */,
 				92D52E324F3F4A8425DEA927 /* OverviewView.swift in Sources */,
 				151CCE2A61928A0B23BAE6E2 /* PDFExporter.swift in Sources */,

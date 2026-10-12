@@ -60,3 +60,60 @@ struct DailyHeartRateStats: Identifiable, Hashable {
         self.sampleCount = sampleCount
     }
 }
+
+/// One time bucket of heart-rate samples — used to draw long ranges without
+/// handing tens of thousands of marks to Swift Charts / the PDF renderer.
+struct HeartRateBucket: Identifiable, Hashable {
+    var id: Date { start }
+    let start: Date
+    let end: Date
+    let minBPM: Double
+    let avgBPM: Double
+    let maxBPM: Double
+    let count: Int
+
+    var mid: Date { start.addingTimeInterval(end.timeIntervalSince(start) / 2) }
+
+    /// Splits `[start, end)` into `maxBuckets` equal slices and aggregates the
+    /// samples falling into each one. Empty slices are omitted.
+    static func make(
+        from samples: [HeartRateSample],
+        start: Date,
+        end: Date,
+        maxBuckets: Int
+    ) -> [HeartRateBucket] {
+        guard !samples.isEmpty, maxBuckets > 0, end > start else { return [] }
+        let span = end.timeIntervalSince(start)
+        let width = span / Double(maxBuckets)
+
+        var mins = [Double](repeating: .greatestFiniteMagnitude, count: maxBuckets)
+        var maxs = [Double](repeating: -.greatestFiniteMagnitude, count: maxBuckets)
+        var sums = [Double](repeating: 0, count: maxBuckets)
+        var counts = [Int](repeating: 0, count: maxBuckets)
+
+        for sample in samples {
+            let offset = sample.date.timeIntervalSince(start)
+            guard offset >= 0, offset <= span else { continue }
+            let index = min(maxBuckets - 1, Int(offset / width))
+            mins[index] = min(mins[index], sample.bpm)
+            maxs[index] = max(maxs[index], sample.bpm)
+            sums[index] += sample.bpm
+            counts[index] += 1
+        }
+
+        var buckets: [HeartRateBucket] = []
+        buckets.reserveCapacity(maxBuckets)
+        for index in 0..<maxBuckets where counts[index] > 0 {
+            let bucketStart = start.addingTimeInterval(Double(index) * width)
+            buckets.append(HeartRateBucket(
+                start: bucketStart,
+                end: bucketStart.addingTimeInterval(width),
+                minBPM: mins[index],
+                avgBPM: sums[index] / Double(counts[index]),
+                maxBPM: maxs[index],
+                count: counts[index]
+            ))
+        }
+        return buckets
+    }
+}

@@ -1,11 +1,15 @@
 import Foundation
 import SwiftUI
 import Combine
+import UIKit
 
 @MainActor
 final class HeartRateViewModel: ObservableObject {
     // Overall mode state
     @Published var samples: [HeartRateSample] = []
+    /// Pre-aggregated chart data for long ranges (empty when `samples` is small
+    /// enough to plot directly).
+    @Published var chartBuckets: [HeartRateBucket] = []
     @Published var summary: HeartRateSummary = .empty
     @Published var previousSummary: HeartRateSummary = .empty
     @Published var zoneBreakdown: ZoneBreakdown = .empty
@@ -25,10 +29,16 @@ final class HeartRateViewModel: ObservableObject {
     // Shared
     @Published var mode: ReportMode = .overall
     @Published var isLoading: Bool = false
+    /// Set only when HealthKit itself is unavailable / the request failed.
     @Published var authorizationError: String?
+    /// Any other loading problem (shown inline, not as a blocking alert).
+    @Published var errorMessage: String?
     @Published var lastRefresh: Date?
 
     static let maxDailyRangeDays = 31
+    /// Above this many samples the trend chart switches to aggregated buckets.
+    static let rawChartLimit = 400
+    static let chartBucketCount = 180
 
     enum ReportMode: String, CaseIterable, Identifiable {
         case overall = "Overall"
@@ -76,9 +86,9 @@ final class HeartRateViewModel: ObservableObject {
 
         var previousTitle: String {
             switch self {
-            case .day1: return "yesterday"
-            case .week1: return "last week"
-            case .month1: return "last month"
+            case .day1: return "previous 24h"
+            case .week1: return "previous 7 days"
+            case .month1: return "previous 30 days"
             case .month3: return "previous 3 months"
             case .month6: return "previous 6 months"
             }
@@ -88,7 +98,13 @@ final class HeartRateViewModel: ObservableObject {
     private let health: HealthKitManager
     private let calendar: Calendar
     private let profile: UserProfile
-    private var profileCancellables: Set<AnyCancellable> = []
+    private var cancellables: Set<AnyCancellable> = []
+
+    /// Bumped on every refresh so a slow, older refresh (e.g. 6M after the
+    /// user already switched to 1D) can't overwrite newer results.
+    private var generation = 0
+    /// Foreground refreshes wait until HealthKit authorization was requested.
+    private var hasBootstrapped = false
 
     init(
         health: HealthKitManager = .shared,
@@ -105,57 +121,90 @@ final class HeartRateViewModel: ObservableObject {
         self.dailyEnd = today
         self.dailyStart = calendar.date(byAdding: .day, value: -6, to: today) ?? today
 
-        // Re-derive zones + insights whenever the profile changes (age or max HR override).
-        Publishers
-            .CombineLatest3(profile.$age, profile.$maxHROverride, profile.$elevatedThreshold)
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _ in
+        // Re-derive zones + insights (and republish the live status) whenever
+        // the profile changes. Debounced so stepping the age stepper doesn't
+        // trigger a burst of work; by the time it fires the new values are set.
+        profile.objectWillChange
+            .debounce(for: .milliseconds(600), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
                 self?.recomputeDerived()
+                Task { @MainActor in await LiveStatusPublisher.shared.publishLatest() }
             }
-            .store(in: &profileCancellables)
+            .store(in: &cancellables)
+
+        // New heart-rate samples arrived in HealthKit (e.g. Apple Watch sync).
+        NotificationCenter.default.publisher(for: .heartRateDataDidChange)
+            .debounce(for: .seconds(2), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in await self?.handleNewHealthData() }
+            }
+            .store(in: &cancellables)
     }
 
     func bootstrap() async {
         do {
             try await health.requestAuthorization()
-            await refresh()
         } catch {
             authorizationError = error.localizedDescription
+            return
         }
+        hasBootstrapped = true
+        await LiveStatusPublisher.shared.start()
+        await refresh()
     }
 
     func refresh() async {
+        generation += 1
+        let myGeneration = generation
         isLoading = true
-        defer { isLoading = false }
+        defer { if myGeneration == generation { isLoading = false } }
 
         do {
             switch mode {
             case .overall:
-                try await refreshOverall()
+                try await refreshOverall(generation: myGeneration)
             case .daily:
-                try await refreshDaily()
+                try await refreshDaily(generation: myGeneration)
             }
+            guard myGeneration == generation else { return }
             lastRefresh = Date()
+            errorMessage = nil
         } catch {
-            authorizationError = error.localizedDescription
+            guard myGeneration == generation else { return }
+            // Locked phone → HealthKit is unreadable for a moment. Not an error
+            // worth showing; the next foreground refresh will succeed.
+            if HealthKitError.isProtectedDataUnavailable(error) { return }
+            errorMessage = error.localizedDescription
         }
     }
 
+    /// Foreground refresh, skipped when the data is still recent.
+    func refreshIfStale(maxAge: TimeInterval = 60) async {
+        guard hasBootstrapped else { return }
+        if let lastRefresh, Date().timeIntervalSince(lastRefresh) < maxAge { return }
+        await refresh()
+    }
+
+    private func handleNewHealthData() async {
+        guard UIApplication.shared.applicationState == .active else { return }
+        await refreshIfStale(maxAge: 20)
+    }
+
     func setMode(_ newMode: ReportMode) async {
+        guard newMode != mode else { return }
         mode = newMode
         await refresh()
     }
 
     func setOverallRange(_ range: OverallRange) async {
+        guard range != selectedRange else { return }
         selectedRange = range
         await refresh()
     }
 
     func setDailyRange(start: Date, end: Date) async {
-        let clampedStart = calendar.startOfDay(for: start)
-        let clampedEnd = calendar.startOfDay(for: end)
-        let (s, e) = Self.clampDailyRange(start: clampedStart, end: clampedEnd, calendar: calendar)
+        let (s, e) = Self.clampDailyRange(start: start, end: end, calendar: calendar)
+        guard s != dailyStart || e != dailyEnd else { return }
         dailyStart = s
         dailyEnd = e
         await refresh()
@@ -163,18 +212,19 @@ final class HeartRateViewModel: ObservableObject {
 
     // MARK: - Fetching
 
-    private func refreshOverall() async throws {
+    private func refreshOverall(generation myGeneration: Int) async throws {
+        let range = selectedRange
         let end = Date()
-        let start = end.addingTimeInterval(-selectedRange.interval)
+        let start = end.addingTimeInterval(-range.interval)
         let prevEnd = start
-        let prevStart = prevEnd.addingTimeInterval(-selectedRange.interval)
+        let prevStart = prevEnd.addingTimeInterval(-range.interval)
 
         async let samplesTask = health.fetchHeartRateSamples(
             start: start, end: end, limit: HealthKitManager.noSampleLimit
         )
-        async let prevSamplesTask = health.fetchHeartRateSamples(
-            start: prevStart, end: prevEnd, limit: HealthKitManager.noSampleLimit
-        )
+        // The previous period only feeds the deltas, so use HealthKit's
+        // statistics instead of loading every sample a second time.
+        async let prevStatsTask = health.fetchHeartRateStatistics(start: prevStart, end: prevEnd)
         async let restingTask = health.fetchAverageResting(start: start, end: end)
         async let prevRestingTask = health.fetchAverageResting(start: prevStart, end: prevEnd)
         async let hrvTask = health.fetchAverageHRV(start: start, end: end)
@@ -182,14 +232,21 @@ final class HeartRateViewModel: ObservableObject {
         async let latestRestingTask = health.fetchLatestRestingHeartRate()
 
         let fetched = try await samplesTask
-        let prevFetched = try await prevSamplesTask
-        let avgResting = try await restingTask
-        let prevAvgResting = try await prevRestingTask
-        let avgHrv = try await hrvTask
-        let prevAvgHrv = try await prevHrvTask
-        let latestResting = try await latestRestingTask
+        // Secondary metrics are optional: a user without HRV / resting data
+        // must still get a working dashboard.
+        let prevStats = try? await prevStatsTask
+        let avgResting = try? await restingTask
+        let prevAvgResting = try? await prevRestingTask
+        let avgHrv = try? await hrvTask
+        let prevAvgHrv = try? await prevHrvTask
+        let latestResting = try? await latestRestingTask
+
+        guard myGeneration == generation else { return }
 
         samples = fetched
+        chartBuckets = fetched.count > Self.rawChartLimit
+            ? HeartRateBucket.make(from: fetched, start: start, end: end, maxBuckets: Self.chartBucketCount)
+            : []
         // Prefer window-averaged resting when we have it, else fall back to the latest all-time value.
         summary = Self.buildSummary(
             samples: fetched,
@@ -198,94 +255,46 @@ final class HeartRateViewModel: ObservableObject {
             start: start,
             end: end
         )
-        previousSummary = Self.buildSummary(
-            samples: prevFetched,
-            resting: prevAvgResting,
-            hrv: prevAvgHrv,
-            start: prevStart,
-            end: prevEnd
+        previousSummary = HeartRateSummary(
+            latest: nil,
+            restingBPM: prevAvgResting,
+            averageBPM: prevStats?.average,
+            minBPM: prevStats?.min,
+            maxBPM: prevStats?.max,
+            hrvSDNN: prevAvgHrv,
+            sampleCount: 0,
+            rangeStart: prevStart,
+            rangeEnd: prevEnd
         )
         recomputeDerived()
-        publishLiveStatusIfSharing()
     }
 
-    /// Pushes the latest heart state into the live-sharing service.
-    /// The service throttles/coalesces writes — call it often, it's cheap.
-    /// Runs emergency evaluation and opportunistically refreshes the
-    /// last-24h trend (capped to one fetch per 15 minutes).
-    private func publishLiveStatusIfSharing() {
-        let sharing = LiveSharingService.shared
-        guard sharing.sharingEnabled else { return }
-        guard let latest = summary.latest else { return }
-
-        let maxHR = profile.maxHR
-        let zone = HeartRateZone(bpm: latest.bpm, maxHR: maxHR)
-        let bpm = Int(latest.bpm.rounded())
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            // Emergency evaluation. Uses last 15 min of samples for "sustained" detection.
-            let recent = (try? await self.health.fetchRecentSamples(minutes: 15)) ?? self.samples
-            let thresholds = EmergencyEvaluator.Thresholds(
-                criticalHighBPM: self.profile.criticalHighBPM,
-                criticalLowBPM: self.profile.criticalLowBPM,
-                sustainedHighBPM: max(self.profile.elevatedThreshold, 120),
-                sustainedMinutes: 10
-            )
-            let emergency = EmergencyEvaluator.evaluate(
-                currentBPM: bpm,
-                recent: recent,
-                thresholds: thresholds
-            )
-
-            // Trend (hourly averages, last 24h) — refresh at most every 15 min.
-            var trend: [Int] = sharing.lastPublishedStatus?.trendHourlyBPM ?? []
-            var trendDate: Date? = sharing.lastPublishedStatus?.trendUpdatedAt
-            let trendStale: Bool = {
-                guard let trendDate else { return true }
-                return Date().timeIntervalSince(trendDate) > 15 * 60
-            }()
-            if trendStale {
-                if let fresh = try? await self.health.fetchLast24hHourlyHeartRate() {
-                    trend = fresh
-                    trendDate = Date()
-                }
-            }
-
-            let status = LiveHeartStatus(
-                id: CloudKitConfig.liveStatusRecordName,
-                ownerID: nil,
-                currentBPM: bpm,
-                zoneRaw: zone.rawValue,
-                restingBPM: self.summary.restingBPM.map { Int($0.rounded()) },
-                hrvMs: self.summary.hrvSDNN,
-                updatedAt: latest.date,
-                isElevated: bpm >= self.profile.elevatedThreshold,
-                elevatedThreshold: self.profile.elevatedThreshold,
-                displayName: self.profile.displayName,
-                deviceName: latest.source,
-                maxHR: Int(maxHR.rounded()),
-                note: nil,
-                trendHourlyBPM: trend,
-                trendUpdatedAt: trendDate,
-                isEmergency: emergency.kind != nil,
-                emergencyKind: emergency.kind,
-                emergencySince: emergency.since
-            )
-            sharing.publish(status)
-        }
-    }
-
-    private func refreshDaily() async throws {
-        let end = calendar.date(byAdding: .day, value: 1, to: dailyEnd) ?? dailyEnd
+    private func refreshDaily(generation myGeneration: Int) async throws {
         let start = dailyStart
+        let end = calendar.date(byAdding: .day, value: 1, to: dailyEnd) ?? dailyEnd
         async let statsTask = health.fetchDailyStats(start: start, end: end, calendar: calendar)
         async let samplesTask = health.fetchHeartRateSamples(
             start: start, end: end, limit: HealthKitManager.noSampleLimit
         )
-        dailyStats = try await statsTask
-        dailySamples = try await samplesTask
+        let stats = try await statsTask
+        let fetchedSamples = try await samplesTask
+        guard myGeneration == generation else { return }
+
+        let cal = calendar
+        let countsByDay = Dictionary(grouping: fetchedSamples) { cal.startOfDay(for: $0.date) }
+            .mapValues { $0.count }
+        dailyStats = stats.map { day in
+            DailyHeartRateStats(
+                id: day.id,
+                day: day.day,
+                minBPM: day.minBPM,
+                avgBPM: day.avgBPM,
+                maxBPM: day.maxBPM,
+                restingBPM: day.restingBPM,
+                sampleCount: countsByDay[day.day] ?? 0
+            )
+        }
+        dailySamples = fetchedSamples
         recomputeDerived()
     }
 
@@ -299,7 +308,8 @@ final class HeartRateViewModel: ObservableObject {
             sourceBreakdown = Self.buildSourceBreakdown(from: samples)
             insights = buildOverallInsights(maxHR: maxHR)
         case .daily:
-            let byDay = Dictionary(grouping: dailySamples) { calendar.startOfDay(for: $0.date) }
+            let cal = calendar
+            let byDay = Dictionary(grouping: dailySamples) { cal.startOfDay(for: $0.date) }
             var zones: [Date: ZoneBreakdown] = [:]
             for (day, samples) in byDay {
                 zones[day] = HeartRateZoneAnalyzer.breakdown(samples: samples, maxHR: maxHR)
@@ -312,15 +322,18 @@ final class HeartRateViewModel: ObservableObject {
 
     // MARK: - Helpers
 
+    /// Normalizes a user-picked range: whole days, never in the future, start
+    /// before end, and at most `maxDailyRangeDays` long (keeping the most
+    /// recent days when trimming).
     static func clampDailyRange(start: Date, end: Date, calendar: Calendar = .current) -> (Date, Date) {
-        var s = start
-        var e = end
+        let today = calendar.startOfDay(for: Date())
+        var s = min(calendar.startOfDay(for: start), today)
+        var e = min(calendar.startOfDay(for: end), today)
         if e < s { swap(&s, &e) }
         let days = calendar.dateComponents([.day], from: s, to: e).day ?? 0
-        if days >= maxDailyRangeDays {
-            if let adjusted = calendar.date(byAdding: .day, value: maxDailyRangeDays - 1, to: s) {
-                e = adjusted
-            }
+        if days >= maxDailyRangeDays,
+           let adjusted = calendar.date(byAdding: .day, value: -(maxDailyRangeDays - 1), to: e) {
+            s = adjusted
         }
         return (s, e)
     }
@@ -335,7 +348,7 @@ final class HeartRateViewModel: ObservableObject {
         let bpms = samples.map(\.bpm)
         let avg = bpms.isEmpty ? nil : bpms.reduce(0, +) / Double(bpms.count)
         return HeartRateSummary(
-            latest: samples.last,
+            latest: samples.max { $0.date < $1.date },
             restingBPM: resting,
             averageBPM: avg,
             minBPM: bpms.min(),
@@ -403,7 +416,7 @@ final class HeartRateViewModel: ObservableObject {
             if abs(delta) >= 2 {
                 let better = delta > 0
                 out.append(Insight(
-                    icon: better ? "waveform.path.ecg" : "waveform.path.ecg",
+                    icon: "waveform.path.ecg",
                     title: "HRV \(better ? "up" : "down") \(Int(abs(delta).rounded())) ms",
                     detail: "\(Int(current.rounded())) ms vs \(Int(prev.rounded())) \(selectedRange.previousTitle)",
                     tint: better ? .green : .orange
@@ -438,12 +451,13 @@ final class HeartRateViewModel: ObservableObject {
 
         // Peak HR in window
         if let maxBpm = summary.maxBPM, let peakSample = samples.max(by: { $0.bpm < $1.bpm }) {
-            let fmt = DateFormatter()
-            fmt.dateFormat = selectedRange == .day1 ? "h:mm a" : "EEE h:mm a"
+            let style: Date.FormatStyle = selectedRange == .day1
+                ? .dateTime.hour().minute()
+                : .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
             out.append(Insight(
                 icon: "bolt.heart.fill",
                 title: "Peak \(Int(maxBpm.rounded())) bpm",
-                detail: "on \(fmt.string(from: peakSample.date))",
+                detail: "at \(peakSample.date.formatted(style))",
                 tint: .pink
             ))
         }
@@ -475,12 +489,10 @@ final class HeartRateViewModel: ObservableObject {
             guard let v = stat.restingBPM else { return nil }
             return (stat.day, v)
         }).min(by: { $0.1 < $1.1 }) {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "EEEE"
             out.append(Insight(
                 icon: "bed.double.fill",
                 title: "Best recovery day",
-                detail: "\(fmt.string(from: best.0)) — resting \(Int(best.1.rounded())) bpm",
+                detail: "\(Self.dayLabel(best.0)) — resting \(Int(best.1.rounded())) bpm",
                 tint: .green
             ))
         }
@@ -490,12 +502,10 @@ final class HeartRateViewModel: ObservableObject {
             guard let v = stat.maxBPM else { return nil }
             return (stat.day, v)
         }).max(by: { $0.1 < $1.1 }) {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "EEEE"
             out.append(Insight(
                 icon: "bolt.heart.fill",
                 title: "Hardest effort",
-                detail: "\(fmt.string(from: highest.0)) — peak \(Int(highest.1.rounded())) bpm",
+                detail: "\(Self.dayLabel(highest.0)) — peak \(Int(highest.1.rounded())) bpm",
                 tint: .pink
             ))
         }
@@ -506,12 +516,10 @@ final class HeartRateViewModel: ObservableObject {
                 (day, z.duration(.fatBurn) + z.duration(.cardio) + z.duration(.peak))
             }
             if let top = scored.max(by: { $0.1 < $1.1 }), top.1 > 0 {
-                let fmt = DateFormatter()
-                fmt.dateFormat = "EEEE"
                 out.append(Insight(
                     icon: "flame.fill",
                     title: "Most active day",
-                    detail: "\(fmt.string(from: top.0)) — \(DurationFormat.compact(top.1)) active",
+                    detail: "\(Self.dayLabel(top.0)) — \(DurationFormat.compact(top.1)) active",
                     tint: .orange
                 ))
             }
@@ -535,6 +543,10 @@ final class HeartRateViewModel: ObservableObject {
         }
 
         return Array(out.prefix(4))
+    }
+
+    private static func dayLabel(_ date: Date) -> String {
+        date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
     }
 }
 

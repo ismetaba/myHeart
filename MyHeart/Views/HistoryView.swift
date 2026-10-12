@@ -6,14 +6,21 @@ struct HistoryView: View {
 
     @State private var searchText: String = ""
     @State private var onlyElevated: Bool = false
+    /// Long ranges hold tens of thousands of samples; render them in pages so
+    /// the list stays responsive.
+    @State private var visibleLimit: Int = Self.pageSize
+
+    private static let pageSize = 1000
 
     var body: some View {
+        // Filter + sort once per render instead of once per use.
+        let filtered = filteredSamples
         NavigationStack {
             Group {
                 if currentSamples.isEmpty {
                     emptyState
                 } else {
-                    list
+                    list(filtered)
                 }
             }
             .navigationTitle("History")
@@ -24,12 +31,18 @@ struct HistoryView: View {
                             Label("Only ≥ \(profile.elevatedThreshold) bpm", systemImage: "exclamationmark.triangle")
                         }
                     } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
+                        Image(systemName: onlyElevated
+                              ? "line.3.horizontal.decrease.circle.fill"
+                              : "line.3.horizontal.decrease.circle")
                     }
+                    .accessibilityLabel("Filter")
                 }
             }
             .searchable(text: $searchText, prompt: "Source")
             .refreshable { await viewModel.refresh() }
+            .onChange(of: searchText) { _ in visibleLimit = Self.pageSize }
+            .onChange(of: onlyElevated) { _ in visibleLimit = Self.pageSize }
+            .onChange(of: currentSamples.count) { _ in visibleLimit = Self.pageSize }
         }
     }
 
@@ -42,11 +55,22 @@ struct HistoryView: View {
         }
     }
 
+    private var rangeDescription: String {
+        switch viewModel.mode {
+        case .overall:
+            return viewModel.selectedRange.fullTitle
+        case .daily:
+            let style = Date.FormatStyle.dateTime.month(.abbreviated).day()
+            return "\(viewModel.dailyStart.formatted(style)) – \(viewModel.dailyEnd.formatted(style))"
+        }
+    }
+
+    /// Newest first, with the elevated / source filters applied.
     private var filteredSamples: [HeartRateSample] {
         var result = currentSamples
         if onlyElevated {
             let t = Double(profile.elevatedThreshold)
-            result = result.filter { $0.bpm >= t }
+            result = result.filter { $0.bpm.rounded() >= t }
         }
         let q = searchText.trimmingCharacters(in: .whitespaces)
         if !q.isEmpty {
@@ -57,24 +81,34 @@ struct HistoryView: View {
         return result.sorted { $0.date > $1.date }
     }
 
-    private var grouped: [(Date, [HeartRateSample])] {
+    private func grouped(_ samples: ArraySlice<HeartRateSample>) -> [(Date, [HeartRateSample])] {
         let cal = Calendar.current
-        let groups = Dictionary(grouping: filteredSamples) { cal.startOfDay(for: $0.date) }
+        let groups = Dictionary(grouping: samples) { cal.startOfDay(for: $0.date) }
         return groups.sorted { $0.key > $1.key }
     }
 
     // MARK: UI
 
-    private var list: some View {
-        List {
-            headerSection
-            ForEach(grouped, id: \.0) { day, samples in
+    private func list(_ filtered: [HeartRateSample]) -> some View {
+        let visible = filtered.prefix(visibleLimit)
+        let maxHR = profile.maxHR
+        let threshold = profile.elevatedThreshold
+        return List {
+            headerSection(filtered)
+            if filtered.isEmpty {
+                Section {
+                    Text("No samples match the current filter.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(grouped(visible), id: \.0) { day, samples in
                 Section {
                     ForEach(samples) { sample in
                         HistoryRow(
                             sample: sample,
-                            zone: HeartRateZone(bpm: sample.bpm, maxHR: profile.maxHR),
-                            elevatedThreshold: profile.elevatedThreshold
+                            zone: HeartRateZone(bpm: sample.bpm, maxHR: maxHR),
+                            elevatedThreshold: threshold
                         )
                     }
                 } header: {
@@ -89,23 +123,36 @@ struct HistoryView: View {
                     .textCase(nil)
                 }
             }
+            if filtered.count > visible.count {
+                Section {
+                    Button {
+                        visibleLimit += Self.pageSize
+                    } label: {
+                        Label("Show older samples (\(filtered.count - visible.count) more)", systemImage: "chevron.down")
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
         }
         .listStyle(.insetGrouped)
     }
 
-    private var headerSection: some View {
+    private func headerSection(_ filtered: [HeartRateSample]) -> some View {
         Section {
             HStack(spacing: 12) {
-                miniStat(label: "Samples", value: "\(filteredSamples.count)", icon: "number")
-                if let minBpm = filteredSamples.map(\.bpm).min() {
+                miniStat(label: "Samples", value: "\(filtered.count)", icon: "number")
+                if let minBpm = filtered.map(\.bpm).min() {
                     miniStat(label: "Min", value: "\(Int(minBpm.rounded()))", icon: "arrow.down.heart")
                 }
-                if let maxBpm = filteredSamples.map(\.bpm).max() {
+                if let maxBpm = filtered.map(\.bpm).max() {
                     miniStat(label: "Max", value: "\(Int(maxBpm.rounded()))", icon: "arrow.up.heart")
                 }
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+        } footer: {
+            Text("Showing \(rangeDescription) — change the range on the Heart tab.")
+                .font(.caption2)
         }
     }
 
@@ -133,7 +180,7 @@ struct HistoryView: View {
                 .foregroundStyle(.secondary)
             Text("No Heart Rate Data")
                 .font(.headline)
-            Text("Pull to refresh after recording samples in Apple Health.")
+            Text("Nothing recorded for \(rangeDescription). Pull to refresh after recording samples in Apple Health, or pick a longer range on the Heart tab.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

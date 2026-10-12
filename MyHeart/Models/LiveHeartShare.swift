@@ -44,6 +44,13 @@ enum CloudKitConfig {
         static let isEmergency     = "isEmergency"      // Int64 (0/1)
         static let emergencyKind   = "emergencyKind"    // String? ("high" / "low" / "sustainedHigh")
         static let emergencySince  = "emergencySince"   // Date?
+
+        // Sharer's emergency contact, so followers can call it in one tap.
+        // NOTE: new fields must be deployed to the CloudKit *Production*
+        // schema (CloudKit Console → Deploy Schema Changes) before a
+        // TestFlight / App Store build can write them.
+        static let emergencyContactName  = "emergencyContactName"   // String?
+        static let emergencyContactPhone = "emergencyContactPhone"  // String?
     }
 
     /// APNs-level subscription IDs managed by the watcher.
@@ -92,6 +99,15 @@ struct LiveHeartStatus: Hashable, Identifiable {
     var emergencyKind: EmergencyKind? = nil
     var emergencySince: Date? = nil
 
+    // Sharer's emergency contact (optional, set in their Settings).
+    var emergencyContactName: String? = nil
+    var emergencyContactPhone: String? = nil
+
+    /// A status is "stale" when the newest heart-rate sample is older than
+    /// this. Apple Watch measures roughly every few minutes at rest and the
+    /// phone receives samples in batches, so anything tighter flaps constantly.
+    static let staleAfter: TimeInterval = 15 * 60
+
     var zone: HeartRateZone {
         HeartRateZone(rawValue: zoneRaw) ?? HeartRateZone(bpm: Double(currentBPM), maxHR: Double(maxHR))
     }
@@ -102,7 +118,16 @@ struct LiveHeartStatus: Hashable, Identifiable {
     }
 
     var isStale: Bool {
-        secondsSinceUpdate > 300  // 5 min
+        secondsSinceUpdate > Self.staleAfter
+    }
+
+    /// An emergency flag only means something while the data is fresh. If the
+    /// sharer's phone went silent mid-emergency we still show it, but marked
+    /// as possibly outdated.
+    var hasCurrentEmergency: Bool { isEmergency && !isStale }
+
+    var hasEmergencyContact: Bool {
+        !(emergencyContactPhone ?? "").isEmpty
     }
 }
 
@@ -164,6 +189,10 @@ extension LiveHeartStatus {
             self.emergencyKind = EmergencyKind(rawValue: rawKind)
         }
         self.emergencySince = record[CloudKitConfig.Key.emergencySince] as? Date
+
+        // Emergency contact
+        self.emergencyContactName = record[CloudKitConfig.Key.emergencyContactName] as? String
+        self.emergencyContactPhone = record[CloudKitConfig.Key.emergencyContactPhone] as? String
     }
 
     /// Apply this status onto a CKRecord. Returns the same record for chaining.
@@ -193,6 +222,16 @@ extension LiveHeartStatus {
         record[CloudKitConfig.Key.isEmergency]    = Int64(isEmergency ? 1 : 0)
         record[CloudKitConfig.Key.emergencyKind]  = emergencyKind?.rawValue
         record[CloudKitConfig.Key.emergencySince] = emergencySince
+
+        // Only touch the contact keys when there is something to write, so a
+        // Production schema without these fields keeps working for users who
+        // never set a contact.
+        if emergencyContactName != nil || record[CloudKitConfig.Key.emergencyContactName] != nil {
+            record[CloudKitConfig.Key.emergencyContactName] = emergencyContactName
+        }
+        if emergencyContactPhone != nil || record[CloudKitConfig.Key.emergencyContactPhone] != nil {
+            record[CloudKitConfig.Key.emergencyContactPhone] = emergencyContactPhone
+        }
         return record
     }
 }
@@ -200,11 +239,27 @@ extension LiveHeartStatus {
 /// Represents one person the current user follows. Backed by a shared
 /// `LiveHeartStatus` record living in the shared database.
 struct FollowedPerson: Hashable, Identifiable {
-    var id: String              // shared record zone name — stable per sharer
+    var id: String              // zone owner name — stable per sharer
     var zoneID: CKRecordZone.ID
     var recordID: CKRecord.ID
     var status: LiveHeartStatus
     var lastFetchedAt: Date
-    var alertThresholdBPM: Int?     // local, not shared
-    var isPinned: Bool = false      // local favorite
+}
+
+/// Per-person alert preferences on the follower's device (not shared).
+/// One source of truth for both the settings UI and the alert evaluator.
+enum FollowAlertSettings {
+    static let defaultThreshold = 130
+
+    static func thresholdKey(_ personID: String) -> String { "follow.alert.\(personID)" }
+    static func enabledKey(_ personID: String) -> String { "follow.alertEnabled.\(personID)" }
+
+    static func threshold(for personID: String, defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.integer(forKey: thresholdKey(personID))
+        return stored > 0 ? stored : defaultThreshold
+    }
+
+    static func isEnabled(for personID: String, defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: enabledKey(personID)) as? Bool ?? true
+    }
 }

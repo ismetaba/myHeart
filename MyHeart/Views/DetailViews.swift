@@ -250,7 +250,7 @@ struct BodyDetailView: View {
                 hero
                 measurements
                 if !weightSeries.isEmpty {
-                    ChartBlock(title: "Weight — last 30 days", color: .brown, points: weightSeries, compact: false)
+                    ChartBlock(title: "Weight — last 30 days", color: .brown, points: weightSeries, compact: false, style: .line)
                 }
             }
             .padding()
@@ -350,10 +350,15 @@ struct SleepDetailView: View {
                     .font(.system(size: 44, weight: .bold, design: .rounded))
                     .foregroundStyle(.indigo)
                     .monospacedDigit()
-                Text("asleep")
+                Text(sleep.isInBedOnly ? "in bed" : "asleep")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()
+            }
+            if sleep.isInBedOnly {
+                Text("Only time in bed was recorded. Wear Apple Watch to bed to see sleep stages.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             SleepPhaseBar(sleep: sleep)
                 .frame(height: 14)
@@ -368,10 +373,18 @@ struct SleepDetailView: View {
             Text("Phases")
                 .font(.headline)
             VStack(spacing: 10) {
-                phaseRow(.core,  seconds: sleep.core)
-                phaseRow(.deep,  seconds: sleep.deep)
-                phaseRow(.rem,   seconds: sleep.rem)
+                if sleep.hasStages {
+                    phaseRow(.core,  seconds: sleep.core)
+                    phaseRow(.deep,  seconds: sleep.deep)
+                    phaseRow(.rem,   seconds: sleep.rem)
+                }
+                if sleep.unspecified > 0 {
+                    phaseRow(.asleep, seconds: sleep.unspecified)
+                }
                 phaseRow(.awake, seconds: sleep.awake)
+                if sleep.isInBedOnly {
+                    phaseRow(.inBed, seconds: sleep.inBed)
+                }
             }
             if let eff = sleep.efficiencyPercent {
                 Divider().padding(.vertical, 4)
@@ -476,10 +489,13 @@ struct StatRow: View {
 }
 
 struct ChartBlock: View {
+    enum Style { case bars, line }
+
     let title: String
     let color: Color
     let points: [MetricPoint]
     let compact: Bool
+    var style: Style = .bars
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -490,37 +506,85 @@ struct ChartBlock: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 160)
             } else {
-                Chart {
-                    ForEach(points) { p in
-                        BarMark(
-                            x: .value("date", p.date, unit: .day),
-                            y: .value("value", p.value)
-                        )
-                        .foregroundStyle(color.gradient)
-                        .cornerRadius(4)
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading) { _ in
-                        AxisGridLine().foregroundStyle(.gray.opacity(0.2))
-                        AxisValueLabel().font(.caption2)
-                    }
-                }
-                .chartXAxis {
-                    AxisMarks(values: .stride(by: .day)) { value in
-                        AxisValueLabel {
-                            if let d = value.as(Date.self) {
-                                Text(d, format: compact ? .dateTime.weekday(.abbreviated) : .dateTime.day().month(.abbreviated))
-                                    .font(.caption2)
-                            }
-                        }
-                    }
-                }
-                .frame(height: 200)
+                chart
+                    .frame(height: 200)
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 18).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
+    @ViewBuilder
+    private var chart: some View {
+        switch style {
+        case .bars:
+            Chart {
+                ForEach(points) { p in
+                    BarMark(
+                        x: .value("date", p.date, unit: .day),
+                        y: .value("value", p.value)
+                    )
+                    .foregroundStyle(color.gradient)
+                    .cornerRadius(4)
+                }
+            }
+            .chartYAxis { yAxis }
+            .chartXAxis { xAxis }
+        case .line:
+            // Body measurements: bars from zero would make 73 kg and 74 kg
+            // look identical — use a line on a fitted scale instead.
+            Chart {
+                ForEach(points) { p in
+                    LineMark(
+                        x: .value("date", p.date, unit: .day),
+                        y: .value("value", p.value)
+                    )
+                    .foregroundStyle(color)
+                    .interpolationMethod(.monotone)
+                    PointMark(
+                        x: .value("date", p.date, unit: .day),
+                        y: .value("value", p.value)
+                    )
+                    .foregroundStyle(color)
+                    .symbolSize(24)
+                }
+            }
+            .chartYScale(domain: fittedDomain)
+            .chartYAxis { yAxis }
+            .chartXAxis { xAxis }
+        }
+    }
+
+    private var yAxis: some AxisContent {
+        AxisMarks(position: .leading) { _ in
+            AxisGridLine().foregroundStyle(.gray.opacity(0.2))
+            AxisValueLabel().font(.caption2)
+        }
+    }
+
+    private var xAxis: some AxisContent {
+        AxisMarks(values: .stride(by: .day, count: dayStride)) { value in
+            AxisValueLabel {
+                if let d = value.as(Date.self) {
+                    Text(d, format: compact ? .dateTime.weekday(.abbreviated) : .dateTime.day().month(.abbreviated))
+                        .font(.caption2)
+                }
+            }
+        }
+    }
+
+    /// One label per day for a week; thinner for longer ranges.
+    private var dayStride: Int {
+        guard let first = points.first?.date, let last = points.last?.date else { return 1 }
+        let days = Calendar.current.dateComponents([.day], from: first, to: last).day ?? 0
+        return max(1, Int((Double(days + 1) / 7).rounded(.up)))
+    }
+
+    private var fittedDomain: ClosedRange<Double> {
+        let values = points.map(\.value)
+        guard let lo = values.min(), let hi = values.max() else { return 0...1 }
+        let pad = max((hi - lo) * 0.2, 0.5)
+        return (lo - pad)...(hi + pad)
     }
 }

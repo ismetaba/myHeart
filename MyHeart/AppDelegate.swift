@@ -7,7 +7,9 @@ import UserNotifications
 ///   - CloudKit share acceptance (both AppDelegate and UIScene paths)
 ///   - APNs registration + silent remote-notification delivery (for CKDatabaseSubscription)
 ///   - Background task registration + execution
-final class AppDelegate: NSObject, UIApplicationDelegate {
+///   - HealthKit background delivery (the observer must exist at launch)
+///   - Showing local alerts while the app is in the foreground
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
 
     // MARK: Launch
 
@@ -32,7 +34,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // notifications require the explicit permission prompt.
         application.registerForRemoteNotifications()
 
+        // Without a delegate, alerts fired while MyHeart is open are dropped.
+        UNUserNotificationCenter.current().delegate = self
+
+        // HealthKit background delivery only works if the observer query is
+        // registered on every launch — including background launches that
+        // iOS performs precisely to deliver new heart-rate samples.
+        Task { @MainActor in
+            await LiveStatusPublisher.shared.start()
+        }
+
         return true
+    }
+
+    // MARK: - Foreground notifications
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
     // MARK: - CloudKit share acceptance (AppDelegate path)
@@ -100,13 +122,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     private static func handleBackgroundRefresh(_ task: BGAppRefreshTask) {
         scheduleNextBackgroundRefresh()
         let work = Task { @MainActor in
-            await LiveSharingService.shared.refreshFollowed()
-            await LiveSharingService.shared.evaluateAlerts()
+            // Follower side: pull the people I follow and alert if needed.
+            await LiveSharingService.shared.handleSubscriptionPush()
+            // Sharer side: push my newest reading in case HealthKit background
+            // delivery hasn't woken us recently.
+            await LiveStatusPublisher.shared.publishLatest(immediate: true)
         }
         task.expirationHandler = { work.cancel() }
         Task {
             _ = await work.value
-            task.setTaskCompleted(success: true)
+            task.setTaskCompleted(success: !work.isCancelled)
         }
     }
 

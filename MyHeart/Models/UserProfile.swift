@@ -73,7 +73,13 @@ final class UserProfile: ObservableObject {
     }
 
     var hasEmergencyContact: Bool {
-        !emergencyContact.isEmpty
+        !emergencyContact.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Name shown to followers — never empty.
+    var effectiveDisplayName: String {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? UIDevice.current.name : trimmed
     }
 
     /// Max heart rate used for zone computation.

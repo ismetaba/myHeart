@@ -10,11 +10,15 @@ import UIKit
 /// - Sharing is done via `CKShare` on that record. Each invited family member
 ///   becomes a `CKShare.Participant` and gets read access to the shared record
 ///   through their own *shared* database — the canonical Apple pattern.
-/// - Writes are throttled (min 30s interval) and coalesced: we keep the newest
-///   pending status and only flush when the throttle window opens or when the
-///   change is "significant" (zone change, >10 BPM delta).
-/// - All CloudKit errors are mapped to a small `SharingError` enum so the UI
-///   can render user-friendly messages instead of CKError codes.
+/// - Writes are throttled (min 30s interval), coalesced and serialized: we
+///   keep the newest pending status, only one save is in flight at a time,
+///   and "significant" changes (zone change, >10 BPM delta, emergency
+///   transitions) bypass the throttle.
+/// - The last saved CKRecord is cached so each update is a single round trip;
+///   a `serverRecordChanged` conflict (another of the user's devices wrote
+///   first) is rebased onto the server copy and retried once.
+/// - All CloudKit errors are mapped to `SharingError` so the UI can render
+///   user-friendly messages instead of CKError codes.
 @MainActor
 final class LiveSharingService: ObservableObject {
     static let shared = LiveSharingService()
@@ -30,20 +34,35 @@ final class LiveSharingService: ObservableObject {
     @Published var currentShareURL: URL?
     @Published var participantCount: Int = 0
     @Published var lastPublishedStatus: LiveHeartStatus?
-    @Published var lastPublishError: String?
+    /// Problems with *my* sharing (enable, publish, stop).
+    @Published var lastError: SharingError?
+    /// Problems on the follower side (accepting invites, refreshing, unfollowing).
+    @Published var followError: SharingError?
     @Published var followed: [FollowedPerson] = []
     @Published var isWorking: Bool = false
+    @Published var isRefreshingFollowed: Bool = false
 
     // MARK: - Internals
 
-    private let container: CKContainer
-    private var privateDB: CKDatabase { container.privateCloudDatabase }
-    private var sharedDB: CKDatabase  { container.sharedCloudDatabase }
+    let container: CKContainer
+    var privateDB: CKDatabase { container.privateCloudDatabase }
+    var sharedDB: CKDatabase { container.sharedCloudDatabase }
 
-    /// Throttle state for publishes.
+    /// Set once the sharing state was read from iCloud for the current account.
+    private var didLoadSharingState = false
+    private var zoneConfirmed = false
+    private var bootstrapTask: Task<Void, Never>?
+    private var hasBootstrapped = false
+    private var accountObserver: NSObjectProtocol?
+
+    /// Last record returned by the server; reused for the next write.
+    private var cachedRecord: CKRecord?
+
+    /// Throttle / coalescing state for publishes.
     private var lastPublishAt: Date = .distantPast
     private var pendingStatus: LiveHeartStatus?
     private var flushTask: Task<Void, Never>?
+    private var isFlushing = false
 
     /// Minimum seconds between CloudKit writes.
     private let throttleInterval: TimeInterval = 30
@@ -53,13 +72,53 @@ final class LiveSharingService: ObservableObject {
 
     private init(container: CKContainer = CKContainer(identifier: CloudKitConfig.containerIdentifier)) {
         self.container = container
+        accountObserver = NotificationCenter.default.addObserver(
+            forName: .CKAccountChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.handleAccountChange() }
+        }
     }
 
     // MARK: - Bootstrap
 
+    /// Loads account status, my sharing state and the people I follow.
+    /// Concurrent callers share one run.
     func bootstrap() async {
+        if let running = bootstrapTask {
+            await running.value
+            return
+        }
+        let task = Task { @MainActor in await self.performBootstrap() }
+        bootstrapTask = task
+        await task.value
+        bootstrapTask = nil
+        hasBootstrapped = true
+    }
+
+    /// Cheap catch-up when the app returns to the foreground: re-read my share
+    /// (participants may have joined) and the people I follow.
+    func refreshOnForeground() async {
+        guard hasBootstrapped, bootstrapTask == nil else { return }
         await refreshAccountStatus()
         guard accountStatus == .available else { return }
+        await loadSharingState()
+        await refreshFollowed()
+        await evaluateAlerts()
+    }
+
+    private func performBootstrap() async {
+        await refreshAccountStatus()
+        switch accountStatus {
+        case .available:
+            break
+        case .noAccount, .restricted:
+            resetForSignedOutAccount()
+            return
+        default:
+            return
+        }
         await ensureZoneExists()
         await loadSharingState()
         await refreshFollowed()
@@ -74,51 +133,109 @@ final class LiveSharingService: ObservableObject {
         }
     }
 
+    /// Lightweight readiness check used by background publishes: makes sure we
+    /// know the account status and whether a share exists, without the full
+    /// bootstrap (followed list, subscriptions).
+    func prepareForPublishing() async {
+        if accountStatus != .available {
+            await refreshAccountStatus()
+        }
+        guard accountStatus == .available, !didLoadSharingState else { return }
+        await loadSharingState()
+    }
+
+    private func handleAccountChange() async {
+        let previousStatus = accountStatus
+        await refreshAccountStatus()
+        if previousStatus == .available, accountStatus == .available {
+            // Same signed-in state (iOS also posts this on some launches):
+            // just re-read everything without wiping the UI first.
+            await bootstrap()
+            return
+        }
+        LiveSharingService.log("iCloud account changed — reloading")
+        didLoadSharingState = false
+        zoneConfirmed = false
+        cachedRecord = nil
+        pendingStatus = nil
+        flushTask?.cancel()
+        flushTask = nil
+        lastPublishedStatus = nil
+        sharingEnabled = false
+        currentShareURL = nil
+        participantCount = 0
+        followed = []
+        lastError = nil
+        followError = nil
+        await bootstrap()
+    }
+
+    private func resetForSignedOutAccount() {
+        didLoadSharingState = false
+        zoneConfirmed = false
+        cachedRecord = nil
+        pendingStatus = nil
+        sharingEnabled = false
+        currentShareURL = nil
+        participantCount = 0
+        followed = []
+    }
+
     // MARK: - Zone
 
     /// Ensures the custom zone exists before we try to write records in it.
+    /// Saving an existing zone is a no-op on the server.
     private func ensureZoneExists() async {
+        guard !zoneConfirmed else { return }
         do {
-            let zone = CKRecordZone(zoneID: CloudKitConfig.zoneID)
-            _ = try await privateDB.save(zone)
+            _ = try await privateDB.save(CKRecordZone(zoneID: CloudKitConfig.zoneID))
+            zoneConfirmed = true
         } catch let error as CKError where error.code == .serverRecordChanged {
-            // Already exists — fine.
+            zoneConfirmed = true
         } catch {
-            lastPublishError = SharingError.wrap(error).friendlyMessage
+            lastError = SharingError.wrap(error)
         }
     }
 
     // MARK: - Sharing state
 
-    /// Public entry for re-reading sharing state after an external change
-    /// (e.g. the UICloudSharingController added/removed a participant).
-    func loadSharingStatePublic() async {
-        await loadSharingState()
-    }
-
-    /// Whether we already have a live-status record + active share.
+    /// Re-reads whether a live-status record + usable share exist.
     /// A share without a populated URL is treated as "not active" — we don't
     /// want to flip the UI into the active state and then be stuck showing
     /// "Preparing invite link…" forever.
-    private func loadSharingState() async {
+    func loadSharingState() async {
+        guard accountStatus == .available else { return }
         do {
             let record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
+            cachedRecord = record
             let share = record.share != nil ? try? await fetchShare(for: record) : nil
-            let hasUsableShare = (share?.url != nil)
-            sharingEnabled = hasUsableShare
-            currentShareURL = share?.url
-            participantCount = max(0, (share?.participants.count ?? 0) - 1)  // minus self
+            applyShareState(share)
             if let status = LiveHeartStatus(record: record) {
                 lastPublishedStatus = status
             }
-        } catch let error as CKError where error.code == .unknownItem {
-            sharingEnabled = false
-            currentShareURL = nil
-            participantCount = 0
+            didLoadSharingState = true
+        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            cachedRecord = nil
+            applyShareState(nil)
             lastPublishedStatus = nil
+            didLoadSharingState = true
         } catch {
-            lastPublishError = SharingError.wrap(error).friendlyMessage
+            lastError = SharingError.wrap(error)
+            return
         }
+
+        // Anything computed before we knew sharing was on can go out now.
+        if sharingEnabled, pendingStatus != nil {
+            await flush()
+        }
+    }
+
+    private func applyShareState(_ share: CKShare?) {
+        let url = share?.url
+        sharingEnabled = url != nil
+        currentShareURL = url
+        let others = share?.participants.filter { $0.role != .owner } ?? []
+        participantCount = others.filter { $0.acceptanceStatus == .accepted }.count
     }
 
     private func fetchShare(for record: CKRecord) async throws -> CKShare? {
@@ -129,15 +246,16 @@ final class LiveSharingService: ObservableObject {
 
     // MARK: - Enable / share creation
 
-    /// Ensures the user has a `LiveHeartStatus` CKRecord + a CKShare on it.
-    /// Returns the server-saved CKShare (which has a live `.url`) and the
-    /// container. Pulls the share out of `modifyRecords(saving:deleting:)`'s
-    /// per-record save results, which is the reliable way to get server-side
-    /// system fields like `url` populated.
-    func prepareShareForSheet(from status: LiveHeartStatus) async throws -> (CKShare, CKContainer) {
-        guard accountStatus == .available else { throw SharingError.notSignedIn }
+    /// Ensures the user has a `LiveHeartStatus` CKRecord + a CKShare on it and
+    /// returns the invite URL. Pulls the share out of
+    /// `modifyRecords(saving:deleting:)`'s per-record save results, which is
+    /// the reliable way to get server-side system fields like `url` populated.
+    @discardableResult
+    func startSharing(with status: LiveHeartStatus) async throws -> URL {
+        guard accountStatus == .available else { throw fail(.notSignedIn) }
         isWorking = true
         defer { isWorking = false }
+        lastError = nil
 
         await ensureZoneExists()
 
@@ -154,29 +272,35 @@ final class LiveSharingService: ObservableObject {
                 recordID: CloudKitConfig.liveStatusRecordID
             )
             status.apply(to: record)
+        } catch {
+            throw fail(SharingError.wrap(error))
         }
 
         // --- Reuse existing share if it still has a server URL ---
-        // IMPORTANT: upgrade its publicPermission to .readOnly if it's still
-        // `.none`. Sharing the URL via Messages / Mail / AirDrop delivers the
-        // invite to arbitrary Apple IDs — if the share is `.none`-only, those
-        // recipients see "Item Unavailable" because they aren't explicit
-        // participants. `.readOnly` is the standard "anyone with the link can
-        // view" model, which is what we want here.
+        // Upgrade its publicPermission to .readOnly if needed: sharing the URL
+        // via Messages / Mail / AirDrop delivers the invite to arbitrary
+        // Apple IDs, and with `.none` those recipients see "Item Unavailable"
+        // because they aren't explicit participants.
         if let existingShareRef = record.share {
             do {
                 let rec = try await privateDB.record(for: existingShareRef.recordID)
-                if let existingShare = rec as? CKShare, existingShare.url != nil {
+                if let existingShare = rec as? CKShare, let url = existingShare.url {
+                    var shareToReport = existingShare
                     if existingShare.publicPermission != .readOnly {
                         LiveSharingService.log("upgrading existing share publicPermission → readOnly")
                         existingShare.publicPermission = .readOnly
-                        _ = try await privateDB.save(existingShare)
+                        if let saved = try await privateDB.save(existingShare) as? CKShare {
+                            shareToReport = saved
+                        }
                     }
-                    LiveSharingService.log("reusing existing share url=\(existingShare.url!.absoluteString)")
-                    self.sharingEnabled = true
-                    self.currentShareURL = existingShare.url
-                    self.lastPublishedStatus = status
-                    return (existingShare, container)
+                    // Push the fresh status onto the record too.
+                    cachedRecord = try? await privateDB.save(record)
+                    LiveSharingService.log("reusing existing share url=\(url.absoluteString)")
+                    applyShareState(shareToReport)
+                    lastPublishedStatus = status
+                    lastPublishAt = Date()
+                    didLoadSharingState = true
+                    return url
                 }
             } catch {
                 LiveSharingService.log("existing share fetch failed, will create fresh: \(error.localizedDescription)")
@@ -192,7 +316,7 @@ final class LiveSharingService: ObservableObject {
         let result: (saveResults: [CKRecord.ID: Result<CKRecord, Error>],
                      deleteResults: [CKRecord.ID: Result<Void, Error>])
         do {
-            // Wrap in a 25s timeout so the UI never stays stuck on "Preparing…"
+            // Wrap in a timeout so the UI never stays stuck on "Preparing…"
             // if CloudKit is unreachable or the container isn't provisioned.
             result = try await withThrowingTimeout(seconds: 25) {
                 try await self.privateDB.modifyRecords(
@@ -202,16 +326,11 @@ final class LiveSharingService: ObservableObject {
                     atomically: true
                 )
             }
-        } catch is CancellationError {
-            let msg = "Save timed out after 25s. Check iCloud sign-in and network, then try again."
-            LiveSharingService.log(msg)
-            self.lastPublishError = msg
-            throw SharingError.unknown(msg)
+        } catch is TimeoutError {
+            throw fail(.unknown("Saving to iCloud timed out. Check your iCloud sign-in and network, then try again."))
         } catch {
-            let wrapped = SharingError.wrap(error)
             LiveSharingService.log("modifyRecords threw: \(error.localizedDescription) (\(type(of: error)))")
-            self.lastPublishError = wrapped.friendlyMessage
-            throw wrapped
+            throw fail(SharingError.wrap(error))
         }
 
         // Log every per-record outcome — this is usually where CloudKit
@@ -228,37 +347,42 @@ final class LiveSharingService: ObservableObject {
         switch result.saveResults[share.recordID] {
         case .success(let savedRecord):
             guard let savedShare = savedRecord as? CKShare else {
-                let msg = "Saved record for share wasn't a CKShare (got \(type(of: savedRecord)))"
-                self.lastPublishError = msg
-                throw SharingError.unknown(msg)
+                throw fail(.unknown("iCloud returned an unexpected record for the share. Please try again."))
             }
             guard let savedURL = savedShare.url else {
-                let msg = "Share saved but URL hasn't populated yet. Try again in a moment."
-                self.lastPublishError = msg
-                throw SharingError.unknown(msg)
+                throw fail(.unknown("The invite link isn't ready yet. Try again in a moment."))
             }
             LiveSharingService.log("saved share url=\(savedURL.absoluteString)")
 
-            self.sharingEnabled = true
-            self.currentShareURL = savedURL
-            self.lastPublishedStatus = status
-            self.lastPublishError = nil
-            return (savedShare, container)
+            if case .success(let savedRoot)? = result.saveResults[record.recordID] {
+                cachedRecord = savedRoot
+            } else {
+                cachedRecord = nil
+            }
+            applyShareState(savedShare)
+            lastPublishedStatus = status
+            lastPublishAt = Date()
+            lastError = nil
+            didLoadSharingState = true
+            return savedURL
 
         case .failure(let error):
-            let wrapped = SharingError.wrap(error)
-            self.lastPublishError = wrapped.friendlyMessage
-            throw wrapped
+            throw fail(SharingError.wrap(error))
         case .none:
-            let msg = "Share was not included in the save results"
-            self.lastPublishError = msg
-            throw SharingError.unknown(msg)
+            throw fail(.unknown("iCloud didn't confirm the share. Please try again."))
         }
     }
 
-    /// Races an async operation against a deadline. Throws `CancellationError`
-    /// on timeout. The underlying task is cancelled too, so CloudKit stops
-    /// reference-counting it.
+    /// Records the error for the UI and returns it for `throw`.
+    private func fail(_ error: SharingError) -> SharingError {
+        lastError = error
+        return error
+    }
+
+    private struct TimeoutError: Error {}
+
+    /// Races an async operation against a deadline. Throws `TimeoutError` on
+    /// timeout and cancels the underlying operation.
     private func withThrowingTimeout<T: Sendable>(
         seconds: TimeInterval,
         _ operation: @escaping @Sendable () async throws -> T
@@ -267,16 +391,16 @@ final class LiveSharingService: ObservableObject {
             group.addTask { try await operation() }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw CancellationError()
+                throw TimeoutError()
             }
-            let result = try await group.next()!
-            group.cancelAll()
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw TimeoutError() }
             return result
         }
     }
 
-    /// Log helper — prefixed so it's grep-able in Xcode console.
-    private static func log(_ msg: @autoclosure () -> String) {
+    /// Log helper — prefixed so it's grep-able in the Xcode console.
+    static func log(_ msg: @autoclosure () -> String) {
         #if DEBUG
         print("[Sharing] \(msg())")
         #endif
@@ -284,54 +408,65 @@ final class LiveSharingService: ObservableObject {
 
     // MARK: - Stop sharing
 
-    /// Deletes the share (and optionally the record). Existing watchers lose access.
-    func stopSharing(deleteRecord: Bool = false) async throws {
-        guard accountStatus == .available else { throw SharingError.notSignedIn }
+    /// Deletes the share. Existing watchers lose access immediately.
+    func stopSharing() async throws {
+        guard accountStatus == .available else { throw fail(.notSignedIn) }
         isWorking = true
         defer { isWorking = false }
+
+        flushTask?.cancel()
+        flushTask = nil
+        pendingStatus = nil
 
         do {
             let record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
             if let shareRef = record.share {
-                _ = try await privateDB.deleteRecord(withID: shareRef.recordID)
+                do {
+                    _ = try await privateDB.deleteRecord(withID: shareRef.recordID)
+                } catch let error as CKError where error.code == .unknownItem {
+                    // Already gone.
+                }
             }
-            if deleteRecord {
-                _ = try await privateDB.deleteRecord(withID: record.recordID)
-            }
-            sharingEnabled = false
-            currentShareURL = nil
-            participantCount = 0
-            if deleteRecord { lastPublishedStatus = nil }
-        } catch let error as CKError where error.code == .unknownItem {
-            sharingEnabled = false
-            currentShareURL = nil
-            participantCount = 0
+        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            // Nothing was shared.
         } catch {
-            throw SharingError.wrap(error)
+            throw fail(SharingError.wrap(error))
         }
+        markSharingStopped()
+        lastError = nil
+    }
+
+    private func markSharingStopped() {
+        cachedRecord = nil
+        pendingStatus = nil
+        sharingEnabled = false
+        currentShareURL = nil
+        participantCount = 0
     }
 
     // MARK: - Publishing (throttled)
 
-    /// Public entry point used by HeartRateViewModel when new data is available.
-    /// Coalesces rapid calls: only the most recent status survives until the
-    /// throttle window opens.
-    func publish(_ status: LiveHeartStatus) {
+    /// Hands a new status to the service. Identical statuses are dropped,
+    /// rapid calls are coalesced (only the newest survives until the throttle
+    /// window opens) and `immediate` / significant changes flush right away.
+    func publish(_ status: LiveHeartStatus, immediate: Bool = false) async {
         guard sharingEnabled, accountStatus == .available else {
-            pendingStatus = status  // keep latest just in case we enable later
+            pendingStatus = status  // keep the latest in case sharing turns on
             return
         }
+        if pendingStatus == nil, let last = lastPublishedStatus, last == status {
+            return  // nothing new
+        }
 
-        let now = Date()
-        let elapsed = now.timeIntervalSince(lastPublishAt)
-        let isSignificant = isSignificantChange(status)
+        let significant = isSignificantChange(status)
+        pendingStatus = status
+        let elapsed = Date().timeIntervalSince(lastPublishAt)
 
-        if elapsed >= throttleInterval || isSignificant {
-            pendingStatus = status
-            flushNow()
-        } else {
-            // Coalesce: keep latest and schedule a flush at the throttle boundary.
-            pendingStatus = status
+        if immediate || significant || elapsed >= throttleInterval {
+            flushTask?.cancel()
+            flushTask = nil
+            await flush()
+        } else if flushTask == nil {
             scheduleFlush(after: throttleInterval - elapsed)
         }
     }
@@ -351,40 +486,78 @@ final class LiveSharingService: ObservableObject {
         flushTask?.cancel()
         flushTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(1, delay) * 1_000_000_000))
-            if Task.isCancelled { return }
-            await self?.flushNow()
+            guard !Task.isCancelled, let self else { return }
+            self.flushTask = nil
+            await self.flush()
         }
     }
 
-    private func flushNow() {
-        Task { @MainActor in await self.flushNowAsync() }
+    /// Writes pending statuses one at a time. If a newer status arrives while
+    /// a save is in flight, the loop picks it up when the save finishes.
+    private func flush() async {
+        guard !isFlushing else { return }
+        isFlushing = true
+        defer { isFlushing = false }
+
+        while sharingEnabled, let status = pendingStatus {
+            pendingStatus = nil
+            do {
+                try await writeStatus(status)
+                lastPublishAt = Date()
+                lastPublishedStatus = status
+                lastError = nil
+            } catch {
+                handleWriteError(error, status: status)
+                return
+            }
+        }
     }
 
-    private func flushNowAsync() async {
-        guard let status = pendingStatus, sharingEnabled else { return }
-        pendingStatus = nil
-        do {
-            try await writeStatus(status)
-            lastPublishAt = Date()
-            lastPublishedStatus = status
-            lastPublishError = nil
-        } catch {
-            lastPublishError = SharingError.wrap(error).friendlyMessage
+    private func handleWriteError(_ error: Error, status: LiveHeartStatus) {
+        let wrapped = SharingError.wrap(error)
+        let code = (error as? CKError)?.code
+        LiveSharingService.log("publish failed: \(error.localizedDescription)")
+
+        if code == .zoneNotFound || code == .userDeletedZone || wrapped == .shareUnavailable {
+            // The record / zone (and with it the share) was deleted elsewhere.
+            markSharingStopped()
+            return
         }
+        if wrapped.isTransient {
+            // Keep the newest status and retry when iCloud says it's OK.
+            if pendingStatus == nil { pendingStatus = status }
+            let retryAfter = (error as? CKError)?.retryAfterSeconds ?? throttleInterval
+            scheduleFlush(after: retryAfter)
+            if wrapped == .conflict { return }  // resolves itself, don't alarm the user
+        }
+        lastError = wrapped
     }
 
     private func writeStatus(_ status: LiveHeartStatus) async throws {
         let record: CKRecord
-        do {
-            record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
-            status.apply(to: record)
-        } catch let error as CKError where error.code == .unknownItem {
-            record = CKRecord(
-                recordType: CloudKitConfig.RecordType.liveHeartStatus,
-                recordID: CloudKitConfig.liveStatusRecordID
-            )
-            status.apply(to: record)
+        if let cachedRecord {
+            record = cachedRecord
+        } else {
+            do {
+                record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
+            } catch let error as CKError where error.code == .unknownItem {
+                // The shared root record is gone, so the share is too.
+                throw SharingError.shareUnavailable
+            }
         }
-        _ = try await privateDB.save(record)
+        status.apply(to: record)
+
+        do {
+            cachedRecord = try await privateDB.save(record)
+        } catch let error as CKError where error.code == .serverRecordChanged {
+            // Another of my devices wrote first — rebase onto the server copy once.
+            cachedRecord = nil
+            guard let serverRecord = error.serverRecord else { throw error }
+            status.apply(to: serverRecord)
+            cachedRecord = try await privateDB.save(serverRecord)
+        } catch {
+            cachedRecord = nil
+            throw error
+        }
     }
 }

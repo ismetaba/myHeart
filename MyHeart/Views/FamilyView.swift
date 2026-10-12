@@ -13,12 +13,14 @@ import UIKit
 /// perfectly via iMessage / Mail / AirDrop / Copy.
 struct FamilyView: View {
     @EnvironmentObject private var sharing: LiveSharingService
-    @EnvironmentObject private var heartVM: HeartRateViewModel
     @EnvironmentObject private var profile: UserProfile
 
     @State private var showStopConfirm = false
     @State private var infoExpanded = false
     @State private var copiedLink = false
+    @State private var pastedLink: String = ""
+    @State private var showPasteField: Bool = false
+    @State private var isAcceptingLink = false
 
     var body: some View {
         NavigationStack {
@@ -42,19 +44,27 @@ struct FamilyView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        Task { await sharing.refreshFollowed() }
+                        Task { await refreshAll() }
                     } label: {
-                        if sharing.isWorking {
+                        if sharing.isWorking || sharing.isRefreshingFollowed {
                             ProgressView()
                         } else {
                             Image(systemName: "arrow.clockwise")
                         }
                     }
+                    .disabled(sharing.isWorking || sharing.isRefreshingFollowed)
+                    .accessibilityLabel("Refresh")
                 }
             }
-            .refreshable {
-                await sharing.refreshAccountStatus()
-                await sharing.refreshFollowed()
+            .refreshable { await refreshAll() }
+            // Keep the followed list reasonably live while this tab is open.
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    await sharing.refreshFollowed()
+                    await sharing.evaluateAlerts()
+                }
             }
         }
         .confirmationDialog(
@@ -63,7 +73,7 @@ struct FamilyView: View {
             titleVisibility: .visible
         ) {
             Button("Stop Sharing", role: .destructive) {
-                Task { try? await sharing.stopSharing() }
+                Task { try? await sharing.stopSharing() }  // errors surface via sharing.lastError
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -71,13 +81,17 @@ struct FamilyView: View {
         }
     }
 
+    private func refreshAll() async {
+        await sharing.refreshAccountStatus()
+        guard sharing.accountStatus == .available else { return }
+        await sharing.loadSharingState()
+        await sharing.refreshFollowed()
+    }
+
     // MARK: Provisioning detection
 
     private var isProvisioningError: Bool {
-        guard let msg = sharing.lastPublishError?.lowercased() else { return false }
-        return msg.contains("container configuration")
-            || msg.contains("container isn't provisioned")
-            || msg.contains("missing entitlement")
+        sharing.lastError == .containerNotConfigured || sharing.followError == .containerNotConfigured
     }
 
     private var setupGuideCard: some View {
@@ -106,7 +120,9 @@ struct FamilyView: View {
 
             HStack {
                 Button {
-                    Task { await sharing.refreshAccountStatus() }
+                    sharing.lastError = nil
+                    sharing.followError = nil
+                    Task { await sharing.bootstrap() }
                 } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
@@ -191,17 +207,14 @@ struct FamilyView: View {
             } else {
                 inactiveSharingView
             }
-            if !isQuotaError, let error = sharing.lastPublishError, !error.isEmpty {
-                errorBanner(error)
+            if !isQuotaError, let error = sharing.lastError {
+                errorBanner(error.friendlyMessage) { sharing.lastError = nil }
             }
         }
     }
 
     private var isQuotaError: Bool {
-        guard let err = sharing.lastPublishError?.lowercased() else { return false }
-        return err.contains("icloud storage is full")
-            || err.contains("quota exceeded")
-            || err.contains("your icloud storage")
+        sharing.lastError == .quotaExceeded
     }
 
     private var quotaErrorCard: some View {
@@ -245,8 +258,14 @@ struct FamilyView: View {
                 }
 
                 Button {
-                    sharing.lastPublishError = nil
-                    Task { await enableSharing() }
+                    sharing.lastError = nil
+                    Task {
+                        if sharing.sharingEnabled {
+                            await LiveStatusPublisher.shared.publishLatest(immediate: true)
+                        } else {
+                            await enableSharing()
+                        }
+                    }
                 } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
@@ -276,7 +295,7 @@ struct FamilyView: View {
         }
     }
 
-    private func errorBanner(_ error: String) -> some View {
+    private func errorBanner(_ error: String, dismiss: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption)
@@ -285,11 +304,9 @@ struct FamilyView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             Spacer()
-            Button("Dismiss") {
-                sharing.lastPublishError = nil
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            Button("Dismiss", action: dismiss)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
@@ -297,7 +314,7 @@ struct FamilyView: View {
 
     private var inactiveSharingView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Share your live heart rate with family and trusted friends. Updates are pushed over iCloud — only people you invite can see them.")
+            Text("Share your live heart rate with family and trusted friends. Updates go through your iCloud account — only people with your invite link can see them.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -332,8 +349,12 @@ struct FamilyView: View {
                 Spacer()
             }
 
-            if let status = sharing.lastPublishedStatus {
+            if let status = sharing.lastPublishedStatus, hasHeartRateData {
                 livePreview(status: status)
+            } else {
+                Text("No heart-rate reading has been sent yet. Wear your Apple Watch — new readings are shared automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let url = sharing.currentShareURL {
@@ -363,6 +384,10 @@ struct FamilyView: View {
         return "Live — \(sharing.participantCount) \(sharing.participantCount == 1 ? "person is" : "people are") following"
     }
 
+    private var hasHeartRateData: Bool {
+        sharing.lastPublishedStatus.map { $0.currentBPM > 0 } ?? false
+    }
+
     private func livePreview(status: LiveHeartStatus) -> some View {
         VStack(spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -377,7 +402,7 @@ struct FamilyView: View {
                 zoneChip(status.zone)
             }
             HStack {
-                Text("Last sent \(status.updatedAt, style: .relative) ago")
+                Text("Measured \(status.updatedAt, style: .relative) ago")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -397,8 +422,8 @@ struct FamilyView: View {
         VStack(spacing: 8) {
             ShareLink(
                 item: url,
-                subject: Text("\(profile.displayName)'s Heart Rate"),
-                message: Text("Follow \(profile.displayName)'s live heart rate in MyHeart")
+                subject: Text("\(profile.effectiveDisplayName)'s Heart Rate"),
+                message: Text("Follow \(profile.effectiveDisplayName)'s live heart rate in MyHeart")
             ) {
                 HStack {
                     Image(systemName: "person.crop.circle.badge.plus")
@@ -454,64 +479,12 @@ struct FamilyView: View {
 
     // MARK: Following section
 
-    @State private var pastedLink: String = ""
-    @State private var showPasteField: Bool = false
-
     private var followingSection: some View {
         SectionCard(title: "Following", icon: "person.2.fill") {
             if sharing.followed.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("When someone shares their heart with you, tap their invite link — you'll show up here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if !showPasteField {
-                        Button {
-                            withAnimation { showPasteField = true }
-                            if let pasted = UIPasteboard.general.string,
-                               pasted.lowercased().contains("icloud.com/share") {
-                                pastedLink = pasted
-                            }
-                        } label: {
-                            Label("Paste Invite Link", systemImage: "link")
-                                .font(.caption.weight(.medium))
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.pink.opacity(0.15)))
-                                .foregroundStyle(.pink)
-                        }
-                    } else {
-                        VStack(spacing: 8) {
-                            HStack {
-                                TextField("https://www.icloud.com/share/…", text: $pastedLink)
-                                    .textFieldStyle(.roundedBorder)
-                                    .autocorrectionDisabled()
-                                    .keyboardType(.URL)
-                                    .textInputAutocapitalization(.never)
-                                Button("Paste") {
-                                    pastedLink = UIPasteboard.general.string ?? pastedLink
-                                }
-                                .font(.caption)
-                            }
-                            Button {
-                                guard let url = URL(string: pastedLink.trimmingCharacters(in: .whitespaces)) else { return }
-                                Task {
-                                    await sharing.acceptByURL(url)
-                                    pastedLink = ""
-                                    showPasteField = false
-                                }
-                            } label: {
-                                Text("Follow")
-                                    .fontWeight(.semibold)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 10)
-                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.pink))
-                                    .foregroundStyle(.white)
-                            }
-                            .disabled(URL(string: pastedLink.trimmingCharacters(in: .whitespaces)) == nil)
-                        }
-                    }
-                }
+                Text("When someone shares their heart with you, tap their invite link — they'll show up here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 10) {
                     ForEach(sharing.followed) { person in
@@ -524,7 +497,108 @@ struct FamilyView: View {
                     }
                 }
             }
+
+            if let error = sharing.followError, error != .containerNotConfigured {
+                errorBanner(error.friendlyMessage) { sharing.followError = nil }
+            }
+
+            pasteLinkControls
         }
+    }
+
+    /// Fallback for when tapping the iCloud link didn't open MyHeart (e.g. it
+    /// was opened in Safari). Always available, so you can follow more than
+    /// one person.
+    @ViewBuilder
+    private var pasteLinkControls: some View {
+        if !showPasteField {
+            Button {
+                withAnimation { showPasteField = true }
+                if let pasted = UIPasteboard.general.string,
+                   Self.inviteURL(from: pasted) != nil {
+                    pastedLink = pasted
+                }
+            } label: {
+                Label("Paste Invite Link", systemImage: "link")
+                    .font(.caption.weight(.medium))
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.pink.opacity(0.15)))
+                    .foregroundStyle(.pink)
+            }
+            .disabled(sharing.accountStatus != .available)
+        } else {
+            VStack(spacing: 8) {
+                HStack {
+                    TextField("https://www.icloud.com/share/…", text: $pastedLink)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                    Button("Paste") {
+                        pastedLink = UIPasteboard.general.string ?? pastedLink
+                    }
+                    .font(.caption)
+                }
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation {
+                            showPasteField = false
+                            pastedLink = ""
+                        }
+                    } label: {
+                        Text("Cancel")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.15)))
+                            .foregroundStyle(.primary)
+                    }
+                    Button {
+                        guard let url = Self.inviteURL(from: pastedLink) else { return }
+                        isAcceptingLink = true
+                        Task {
+                            let accepted = await sharing.acceptByURL(url)
+                            isAcceptingLink = false
+                            if accepted {
+                                pastedLink = ""
+                                showPasteField = false
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            if isAcceptingLink { ProgressView().tint(.white) }
+                            Text("Follow").fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.pink))
+                        .foregroundStyle(.white)
+                    }
+                    .disabled(Self.inviteURL(from: pastedLink) == nil || isAcceptingLink)
+                }
+                if !pastedLink.isEmpty && Self.inviteURL(from: pastedLink) == nil {
+                    Text("That doesn't look like an iCloud invite link (https://www.icloud.com/share/…).")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    /// Extracts an iCloud share URL from pasted text (which may include the
+    /// invite message around the link).
+    static func inviteURL(from text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = [trimmed] + trimmed.components(separatedBy: .whitespacesAndNewlines)
+        for candidate in candidates {
+            guard let url = URL(string: candidate),
+                  url.scheme?.lowercased() == "https",
+                  let host = url.host?.lowercased(),
+                  host == "icloud.com" || host.hasSuffix(".icloud.com"),
+                  url.path.lowercased().hasPrefix("/share") else { continue }
+            return url
+        }
+        return nil
     }
 
     // MARK: Privacy section
@@ -552,7 +626,8 @@ struct FamilyView: View {
                     bullet("Data is stored in your iCloud account and transmitted through Apple's servers. It never touches any MyHeart backend — there isn't one.")
                     bullet("The invite link itself is the access key — anyone who receives it can view your live heart rate (like a Google Docs \"anyone with the link\" share). Don't post it publicly. Share it only with people you trust.")
                     bullet("Tapping Stop Sharing revokes the link immediately; everyone loses access.")
-                    bullet("Updates are throttled to one every 30 seconds; emergencies bypass the throttle.")
+                    bullet("New readings are sent as your Apple Watch syncs them to this iPhone — at most one update every 30 seconds; emergencies bypass the limit. If your iPhone is off or offline, followers see when the last reading was taken.")
+                    bullet("Your emergency contact from Settings is included so followers can call it.")
                     bullet("Revoking iCloud access for MyHeart in iOS Settings also stops the feature.")
                 }
                 .font(.caption)
@@ -574,33 +649,32 @@ struct FamilyView: View {
     // MARK: Actions
 
     private func enableSharing() async {
-        let status = currentStatusOrPlaceholder()
         do {
-            _ = try await sharing.prepareShareForSheet(from: status)
+            try await sharing.startSharing(with: placeholderStatus())
+            // Replace the placeholder with a real reading right away.
+            await LiveStatusPublisher.shared.publishLatest(immediate: true)
         } catch {
-            // Error surfaces via sharing.lastPublishError; the inline banner shows it.
+            // Surfaces via sharing.lastError; the inline banner shows it.
         }
     }
 
-    private func currentStatusOrPlaceholder() -> LiveHeartStatus {
-        let latest = heartVM.summary.latest
-        let maxHR = profile.maxHR
-        let bpm = latest.map { Int($0.bpm.rounded()) } ?? 0
-        let zone = latest.map { HeartRateZone(bpm: $0.bpm, maxHR: maxHR) } ?? .resting
-
+    /// Minimal record content for creating the share; the live publisher
+    /// overwrites it with the newest HealthKit reading immediately after.
+    private func placeholderStatus() -> LiveHeartStatus {
+        let previous = sharing.lastPublishedStatus
         return LiveHeartStatus(
             id: CloudKitConfig.liveStatusRecordName,
             ownerID: nil,
-            currentBPM: bpm,
-            zoneRaw: zone.rawValue,
-            restingBPM: heartVM.summary.restingBPM.map { Int($0.rounded()) },
-            hrvMs: heartVM.summary.hrvSDNN,
-            updatedAt: latest?.date ?? Date(),
-            isElevated: bpm >= profile.elevatedThreshold,
+            currentBPM: previous?.currentBPM ?? 0,
+            zoneRaw: previous?.zoneRaw ?? HeartRateZone.resting.rawValue,
+            restingBPM: previous?.restingBPM,
+            hrvMs: previous?.hrvMs,
+            updatedAt: previous?.updatedAt ?? Date(),
+            isElevated: false,
             elevatedThreshold: profile.elevatedThreshold,
-            displayName: profile.displayName,
-            deviceName: latest?.source,
-            maxHR: Int(maxHR.rounded()),
+            displayName: profile.effectiveDisplayName,
+            deviceName: previous?.deviceName,
+            maxHR: Int(profile.maxHR.rounded()),
             note: nil
         )
     }
@@ -634,9 +708,9 @@ private struct FollowedRow: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
-                Circle().fill(person.status.zone.color.opacity(0.18))
-                Image(systemName: "person.fill")
-                    .foregroundStyle(person.status.zone.color)
+                Circle().fill((person.status.isEmergency ? Color.red : person.status.zone.color).opacity(0.18))
+                Image(systemName: person.status.isEmergency ? "exclamationmark.triangle.fill" : "person.fill")
+                    .foregroundStyle(person.status.isEmergency ? Color.red : person.status.zone.color)
             }
             .frame(width: 40, height: 40)
 
@@ -662,7 +736,7 @@ private struct FollowedRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text("\(person.status.currentBPM)")
                     .font(.title3.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(person.status.isElevated ? .red : .pink)
+                    .foregroundStyle(person.status.isStale ? Color.secondary : (person.status.isElevated ? Color.red : Color.pink))
                 Text("bpm")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -680,6 +754,5 @@ private struct FollowedRow: View {
 #Preview {
     FamilyView()
         .environmentObject(LiveSharingService.shared)
-        .environmentObject(HeartRateViewModel.preview)
         .environmentObject(UserProfile.shared)
 }

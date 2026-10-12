@@ -6,6 +6,18 @@ enum HealthKitError: LocalizedError {
     case typeUnavailable
     case authorizationDenied
 
+    /// True for the "device is locked" error HealthKit throws while protected
+    /// data is unavailable (typical for background wakes). Not worth surfacing.
+    static func isProtectedDataUnavailable(_ error: Error) -> Bool {
+        (error as? HKError)?.code == .errorDatabaseInaccessible
+    }
+
+    /// Statistics queries over a window without samples fail with
+    /// `errorNoData` instead of returning an empty result.
+    static func isNoData(_ error: Error) -> Bool {
+        (error as? HKError)?.code == .errorNoData
+    }
+
     var errorDescription: String? {
         switch self {
         case .notAvailable:
@@ -96,6 +108,8 @@ final class HealthKitManager {
             bodyMassType, bmiType, heightType, bodyFatType, leanBodyMassType,
             dietaryEnergyType, dietaryWaterType, caffeineType, proteinType,
             sleepType,
+            // Required for HKActivitySummaryQuery (ring goals + stand hours).
+            HKObjectType.activitySummaryType(),
         ]
         let optional: [HKObjectType?] = [
             vo2MaxType, standTimeType,
@@ -113,6 +127,114 @@ final class HealthKitManager {
             throw HealthKitError.notAvailable
         }
         try await store.requestAuthorization(toShare: [], read: readTypes)
+    }
+
+    /// Whether the permission sheet has already been shown at least once.
+    /// HealthKit never reveals whether *read* access was granted, only whether
+    /// asking again would show UI.
+    func hasRequestedAuthorization() async -> Bool {
+        guard HKHealthStore.isHealthDataAvailable() else { return false }
+        return await withCheckedContinuation { continuation in
+            store.getRequestStatusForAuthorization(toShare: [], read: readTypes) { status, _ in
+                continuation.resume(returning: status == .unnecessary)
+            }
+        }
+    }
+
+    // MARK: - Live updates
+
+    /// Registers a long-running observer that fires whenever new heart-rate
+    /// samples land in HealthKit (Apple Watch sync, manual entry, …).
+    /// `onChange` must call the provided completion when it's done so iOS
+    /// knows the background delivery was handled. `onError` fires when the
+    /// query dies (e.g. authorization not determined yet).
+    func startHeartRateObserver(
+        onChange: @escaping (_ completion: @escaping () -> Void) -> Void,
+        onError: @escaping (Error) -> Void
+    ) -> HKObserverQuery {
+        let query = HKObserverQuery(sampleType: heartRateType, predicate: nil) { _, completion, error in
+            if let error {
+                completion()
+                onError(error)
+                return
+            }
+            onChange(completion)
+        }
+        store.execute(query)
+        return query
+    }
+
+    func stopObserver(_ query: HKObserverQuery) {
+        store.stop(query)
+    }
+
+    /// Lets iOS wake the app in the background when new heart-rate samples
+    /// arrive. Requires the HealthKit background-delivery entitlement.
+    func enableHeartRateBackgroundDelivery() {
+        store.enableBackgroundDelivery(for: heartRateType, frequency: .immediate) { _, error in
+            if let error {
+                print("[HealthKit] background delivery unavailable: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The single most recent heart-rate sample, regardless of date.
+    func fetchLatestHeartRateSample() async throws -> HeartRateSample? {
+        let sort = [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]
+        let sample: HKQuantitySample? = try await withCheckedThrowingContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: heartRateType,
+                predicate: nil,
+                limit: 1,
+                sortDescriptors: sort
+            ) { _, results, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume(returning: (results as? [HKQuantitySample])?.first)
+            }
+            store.execute(query)
+        }
+        return sample.map { makeSample($0) }
+    }
+
+    /// Average / min / max heart rate over a window without loading every
+    /// sample into memory. Used for the previous-period comparison.
+    func fetchHeartRateStatistics(start: Date, end: Date) async throws -> (average: Double?, min: Double?, max: Double?) {
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictEndDate)
+        let unit = bpmUnit
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKStatisticsQuery(
+                quantityType: heartRateType,
+                quantitySamplePredicate: predicate,
+                options: [.discreteAverage, .discreteMin, .discreteMax]
+            ) { _, stats, error in
+                if let error {
+                    if HealthKitError.isNoData(error) {
+                        continuation.resume(returning: (nil, nil, nil))
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                continuation.resume(returning: (
+                    stats?.averageQuantity()?.doubleValue(for: unit),
+                    stats?.minimumQuantity()?.doubleValue(for: unit),
+                    stats?.maximumQuantity()?.doubleValue(for: unit)
+                ))
+            }
+            store.execute(query)
+        }
+    }
+
+    private func makeSample(_ sample: HKQuantitySample) -> HeartRateSample {
+        HeartRateSample(
+            id: sample.uuid,
+            bpm: sample.quantity.doubleValue(for: bpmUnit),
+            date: sample.endDate,
+            source: sample.sourceRevision.source.name
+        )
     }
 
     func fetchHeartRateSamples(start: Date, end: Date, limit: Int = 2000) async throws -> [HeartRateSample] {
@@ -135,14 +257,7 @@ final class HealthKitManager {
             store.execute(query)
         }
 
-        return samples.map { sample in
-            HeartRateSample(
-                id: sample.uuid,
-                bpm: sample.quantity.doubleValue(for: bpmUnit),
-                date: sample.endDate,
-                source: sample.sourceRevision.source.name
-            )
-        }
+        return samples.map { makeSample($0) }
     }
 
     func fetchLatestQuantity(for type: HKQuantityType, unit: HKUnit) async throws -> Double? {
@@ -202,7 +317,12 @@ final class HealthKitManager {
                 options: .discreteAverage
             ) { _, stats, error in
                 if let error {
-                    continuation.resume(throwing: error)
+                    // HealthKit reports an empty window as an error; that's just "no value".
+                    if HealthKitError.isNoData(error) {
+                        continuation.resume(returning: nil)
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
                     return
                 }
                 continuation.resume(returning: stats?.averageQuantity()?.doubleValue(for: unit))
@@ -212,6 +332,8 @@ final class HealthKitManager {
     }
 
     /// Fetches per-day min/avg/max heart rate and resting heart rate between `start` and `end`.
+    /// `sampleCount` is left at 0 — callers that already hold the raw samples
+    /// fill it in, which avoids loading every sample a second time.
     func fetchDailyStats(start: Date, end: Date, calendar: Calendar = .current) async throws -> [DailyHeartRateStats] {
         let dayComp = DateComponents(day: 1)
         let anchor = calendar.startOfDay(for: start)
@@ -226,9 +348,6 @@ final class HealthKitManager {
         async let maxC: HKStatisticsCollection = runStatisticsCollection(
             type: heartRateType, predicate: predicate, options: .discreteMax, anchor: anchor, interval: dayComp
         )
-        async let countsByDayTask: [Date: Int] = fetchSampleCountsByDay(
-            start: start, end: end, calendar: calendar
-        )
         // Resting HR is one value per day already; use average for the bucket.
         async let restingC: HKStatisticsCollection = runStatisticsCollection(
             type: restingHeartRateType,
@@ -241,7 +360,6 @@ final class HealthKitManager {
         let avgCol = try await avg
         let minCol = try await minC
         let maxCol = try await maxC
-        let countsByDay = try await countsByDayTask
         let restingCol = try await restingC
 
         var stats: [DailyHeartRateStats] = []
@@ -258,8 +376,6 @@ final class HealthKitManager {
             let restingStat = restingCol.statistics(for: avgStat.startDate)
             let restingVal = restingStat?.averageQuantity()?.doubleValue(for: self.bpmUnit)
 
-            let count = countsByDay[day] ?? 0
-
             stats.append(
                 DailyHeartRateStats(
                     day: day,
@@ -267,36 +383,11 @@ final class HealthKitManager {
                     avgBPM: avgVal,
                     maxBPM: maxVal,
                     restingBPM: restingVal,
-                    sampleCount: count
+                    sampleCount: 0
                 )
             )
         }
         return stats
-    }
-
-    private func fetchSampleCountsByDay(start: Date, end: Date, calendar: Calendar) async throws -> [Date: Int] {
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
-        let samples: [HKQuantitySample] = try await withCheckedThrowingContinuation { continuation in
-            let query = HKSampleQuery(
-                sampleType: heartRateType,
-                predicate: predicate,
-                limit: HKObjectQueryNoLimit,
-                sortDescriptors: nil
-            ) { _, results, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                continuation.resume(returning: (results as? [HKQuantitySample]) ?? [])
-            }
-            store.execute(query)
-        }
-        var counts: [Date: Int] = [:]
-        for sample in samples {
-            let day = calendar.startOfDay(for: sample.endDate)
-            counts[day, default: 0] += 1
-        }
-        return counts
     }
 
     private func runStatisticsCollection(

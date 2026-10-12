@@ -1,43 +1,76 @@
 import SwiftUI
 import Charts
 
+/// The Heart tab. Doesn't own a NavigationStack: it's embedded in one by
+/// `ContentView` and also pushed from the Health tab.
 struct DashboardView: View {
     @EnvironmentObject private var viewModel: HeartRateViewModel
     @EnvironmentObject private var profile: UserProfile
-    @State private var pdfURL: URL?
-    @State private var showShare = false
+    @State private var exportedFile: ExportedFile?
     @State private var exportError: String?
+    @State private var isExporting = false
+
+    private struct ExportedFile: Identifiable {
+        let url: URL
+        var id: URL { url }
+    }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    modePicker
-                        .padding(.horizontal)
+        ScrollView {
+            VStack(spacing: 16) {
+                modePicker
+                    .padding(.horizontal)
 
-                    if viewModel.mode == .overall {
-                        overallSection
-                    } else {
-                        dailySection
-                    }
+                if let message = viewModel.errorMessage {
+                    errorBanner(message)
+                        .padding(.horizontal)
                 }
-                .padding(.vertical)
+
+                if viewModel.mode == .overall {
+                    overallSection
+                } else {
+                    dailySection
+                }
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("MyHeart")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbar }
-            .refreshable { await viewModel.refresh() }
-            .sheet(isPresented: $showShare) {
-                if let pdfURL { ShareSheet(activityItems: [pdfURL]) }
-            }
-            .alert(
-                "Export Failed",
-                isPresented: .constant(exportError != nil),
-                actions: { Button("OK") { exportError = nil } },
-                message: { Text(exportError ?? "") }
-            )
+            .padding(.vertical)
         }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("MyHeart")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { toolbar }
+        .refreshable { await viewModel.refresh() }
+        .sheet(item: $exportedFile) { file in
+            ShareSheet(activityItems: [file.url])
+        }
+        .alert(
+            "Export Failed",
+            isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            ),
+            actions: { Button("OK", role: .cancel) {} },
+            message: { Text(exportError ?? "") }
+        )
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+            Spacer(minLength: 0)
+            Button {
+                viewModel.errorMessage = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
     }
 
     @ToolbarContentBuilder
@@ -56,13 +89,14 @@ struct DashboardView: View {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 Task { await export() }
             } label: {
-                if viewModel.isLoading {
+                if viewModel.isLoading || isExporting {
                     ProgressView()
                 } else {
                     Image(systemName: "square.and.arrow.up")
                 }
             }
             .disabled(exportDisabled)
+            .accessibilityLabel("Export PDF report")
         }
     }
 
@@ -132,7 +166,7 @@ struct DashboardView: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(viewModel.summary.latest.map { String(Int($0.bpm)) } ?? "—")
+                Text(viewModel.summary.latest.map { String(Int($0.bpm.rounded())) } ?? "—")
                     .font(.system(size: 72, weight: .bold, design: .rounded))
                     .foregroundStyle(.pink)
                     .monospacedDigit()
@@ -260,9 +294,9 @@ struct DashboardView: View {
             } else {
                 OverallChart(
                     samples: viewModel.samples,
+                    buckets: viewModel.chartBuckets,
                     averageBPM: viewModel.summary.averageBPM,
-                    range: viewModel.selectedRange,
-                    maxHR: profile.maxHR
+                    range: viewModel.selectedRange
                 )
                 .frame(height: 240)
             }
@@ -316,20 +350,24 @@ struct DashboardView: View {
         .padding(.horizontal)
     }
 
+    private var selectedDayCount: Int {
+        let cal = Calendar.current
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: localStart), to: cal.startOfDay(for: localEnd)).day ?? 0
+        return max(0, days) + 1
+    }
+
     private var dailyControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("Daily Report", systemImage: "calendar")
                     .font(.headline)
                 Spacer()
-                if let days = Calendar.current.dateComponents([.day], from: localStart, to: localEnd).day {
-                    Text("\(days + 1) day\(days == 0 ? "" : "s")")
-                        .font(.caption.monospacedDigit())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.pink.opacity(0.15)))
-                        .foregroundStyle(.pink)
-                }
+                Text("\(selectedDayCount) day\(selectedDayCount == 1 ? "" : "s")")
+                    .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.pink.opacity(0.15)))
+                    .foregroundStyle(.pink)
             }
             Text("Pick a range up to \(HeartRateViewModel.maxDailyRangeDays) days. Each day gets its own 24-hour chart in the PDF.")
                 .font(.caption)
@@ -337,7 +375,7 @@ struct DashboardView: View {
 
             VStack(spacing: 8) {
                 DatePicker("Start", selection: $localStart, in: ...localEnd, displayedComponents: .date)
-                DatePicker("End", selection: $localEnd, in: localStart...Date(), displayedComponents: .date)
+                DatePicker("End", selection: $localEnd, in: min(localStart, Date())...Date(), displayedComponents: .date)
             }
 
             HStack(spacing: 8) {
@@ -345,12 +383,6 @@ struct DashboardView: View {
                 quickPreset("14 days", days: 13)
                 quickPreset("30 days", days: 29)
                 Spacer()
-                Button("Apply") {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    Task { await viewModel.setDailyRange(start: localStart, end: localEnd) }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.pink)
             }
         }
         .padding()
@@ -362,10 +394,24 @@ struct DashboardView: View {
                 didInitDates = true
             }
         }
+        // Apply as soon as the range changes. Observing both dates together
+        // means a preset (which moves both) triggers a single reload.
+        .onChange(of: [localStart, localEnd]) { _ in
+            guard didInitDates else { return }
+            Task { await applyLocalRange() }
+        }
+    }
+
+    private func applyLocalRange() async {
+        await viewModel.setDailyRange(start: localStart, end: localEnd)
+        // Reflect clamping (max length, no future dates) back into the pickers.
+        if localStart != viewModel.dailyStart { localStart = viewModel.dailyStart }
+        if localEnd != viewModel.dailyEnd { localEnd = viewModel.dailyEnd }
     }
 
     private func quickPreset(_ title: String, days: Int) -> some View {
         Button(title) {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             let today = Calendar.current.startOfDay(for: Date())
             localEnd = today
             localStart = Calendar.current.date(byAdding: .day, value: -days, to: today) ?? today
@@ -388,10 +434,8 @@ struct DashboardView: View {
     }
 
     private var rangeSubtitle: String? {
-        let fmt = DateFormatter()
-        fmt.dateStyle = .medium
-        fmt.timeStyle = .none
-        return "\(fmt.string(from: viewModel.dailyStart)) – \(fmt.string(from: viewModel.dailyEnd))"
+        let style = Date.FormatStyle.dateTime.month(.abbreviated).day().year()
+        return "\(viewModel.dailyStart.formatted(style)) – \(viewModel.dailyEnd.formatted(style))"
     }
 
     private var dailyChartCard: some View {
@@ -456,7 +500,7 @@ struct DashboardView: View {
     }
 
     private var exportDisabled: Bool {
-        if viewModel.isLoading { return true }
+        if viewModel.isLoading || isExporting { return true }
         switch viewModel.mode {
         case .overall: return viewModel.samples.isEmpty
         case .daily:   return viewModel.dailyStats.isEmpty
@@ -473,32 +517,52 @@ struct DashboardView: View {
         return String(Int(value.rounded()))
     }
 
+    /// Renders the PDF off the main thread (large ranges take a moment) and
+    /// presents the share sheet.
     private func export() async {
+        guard !isExporting else { return }
+        isExporting = true
+        defer { isExporting = false }
+
+        let mode = viewModel.mode
+        let summary = viewModel.summary
+        let previousSummary = viewModel.previousSummary
+        let samples = viewModel.samples
+        let zones = viewModel.zoneBreakdown
+        let maxHR = profile.maxHR
+        let rangeTitle = viewModel.selectedRange.fullTitle
+        let previousRangeLabel = viewModel.selectedRange.previousTitle
+        let dailyStats = viewModel.dailyStats
+        let dailySamples = viewModel.dailySamples
+        let dailyZones = viewModel.dailyZones
+        let dailyStart = viewModel.dailyStart
+        let dailyEnd = viewModel.dailyEnd
+
         do {
-            let url: URL
-            switch viewModel.mode {
-            case .overall:
-                url = try PDFExporter.exportOverall(
-                    summary: viewModel.summary,
-                    previousSummary: viewModel.previousSummary,
-                    samples: viewModel.samples,
-                    zones: viewModel.zoneBreakdown,
-                    maxHR: profile.maxHR,
-                    rangeTitle: viewModel.selectedRange.fullTitle,
-                    previousRangeLabel: viewModel.selectedRange.previousTitle
-                )
-            case .daily:
-                url = try PDFExporter.exportDaily(
-                    stats: viewModel.dailyStats,
-                    samples: viewModel.dailySamples,
-                    zonesByDay: viewModel.dailyZones,
-                    maxHR: profile.maxHR,
-                    start: viewModel.dailyStart,
-                    end: viewModel.dailyEnd
-                )
-            }
-            pdfURL = url
-            showShare = true
+            let url = try await Task.detached(priority: .userInitiated) { () throws -> URL in
+                switch mode {
+                case .overall:
+                    return try PDFExporter.exportOverall(
+                        summary: summary,
+                        previousSummary: previousSummary,
+                        samples: samples,
+                        zones: zones,
+                        maxHR: maxHR,
+                        rangeTitle: rangeTitle,
+                        previousRangeLabel: previousRangeLabel
+                    )
+                case .daily:
+                    return try PDFExporter.exportDaily(
+                        stats: dailyStats,
+                        samples: dailySamples,
+                        zonesByDay: dailyZones,
+                        maxHR: maxHR,
+                        start: dailyStart,
+                        end: dailyEnd
+                    )
+                }
+            }.value
+            exportedFile = ExportedFile(url: url)
         } catch {
             exportError = error.localizedDescription
         }
@@ -834,29 +898,56 @@ private struct ZoneStripMini: View {
 
 private struct OverallChart: View {
     let samples: [HeartRateSample]
+    /// When non-empty, the chart draws these aggregates (min–max band + mean
+    /// line) instead of every raw sample — tens of thousands of marks would
+    /// freeze the UI.
+    let buckets: [HeartRateBucket]
     let averageBPM: Double?
     let range: HeartRateViewModel.OverallRange
-    let maxHR: Double
 
     var body: some View {
         Chart {
-            ForEach(samples) { sample in
-                LineMark(
-                    x: .value("Time", sample.date),
-                    y: .value("BPM", sample.bpm)
-                )
-                .foregroundStyle(.pink)
-                .interpolationMethod(.monotone)
-                .lineStyle(StrokeStyle(lineWidth: 1.8))
-            }
+            if buckets.isEmpty {
+                ForEach(samples) { sample in
+                    LineMark(
+                        x: .value("Time", sample.date),
+                        y: .value("BPM", sample.bpm)
+                    )
+                    .foregroundStyle(.pink)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 1.8))
+                }
 
-            ForEach(samples) { sample in
-                PointMark(
-                    x: .value("Time", sample.date),
-                    y: .value("BPM", sample.bpm)
-                )
-                .symbolSize(8)
-                .foregroundStyle(.pink.opacity(0.55))
+                if samples.count <= 150 {
+                    ForEach(samples) { sample in
+                        PointMark(
+                            x: .value("Time", sample.date),
+                            y: .value("BPM", sample.bpm)
+                        )
+                        .symbolSize(8)
+                        .foregroundStyle(.pink.opacity(0.55))
+                    }
+                }
+            } else {
+                ForEach(buckets) { bucket in
+                    AreaMark(
+                        x: .value("Time", bucket.mid),
+                        yStart: .value("Min", bucket.minBPM),
+                        yEnd: .value("Max", bucket.maxBPM)
+                    )
+                    .foregroundStyle(.pink.opacity(0.18))
+                    .interpolationMethod(.monotone)
+                }
+
+                ForEach(buckets) { bucket in
+                    LineMark(
+                        x: .value("Time", bucket.mid),
+                        y: .value("BPM", bucket.avgBPM)
+                    )
+                    .foregroundStyle(.pink)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 1.6))
+                }
             }
 
             if let avg = averageBPM {
@@ -864,7 +955,7 @@ private struct OverallChart: View {
                     .foregroundStyle(.secondary)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .annotation(position: .topTrailing, alignment: .trailing) {
-                        Text("avg \(Int(avg))")
+                        Text("avg \(Int(avg.rounded()))")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -920,11 +1011,19 @@ private struct OverallChart: View {
     }
 
     private func yDomain() -> ClosedRange<Double> {
-        let values = samples.map(\.bpm)
-        guard let lo = values.min(), let hi = values.max() else { return 40...160 }
+        let lo: Double?
+        let hi: Double?
+        if buckets.isEmpty {
+            lo = samples.map(\.bpm).min()
+            hi = samples.map(\.bpm).max()
+        } else {
+            lo = buckets.map(\.minBPM).min()
+            hi = buckets.map(\.maxBPM).max()
+        }
+        guard let lo, let hi else { return 40...160 }
         let padding = max(5, (hi - lo) * 0.1)
         let lower = max(30, (lo - padding).rounded(.down))
-        let upper = (hi + padding).rounded(.up)
+        let upper = max(lower + 10, (hi + padding).rounded(.up))
         return lower...upper
     }
 }
@@ -975,7 +1074,7 @@ private struct DailyChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .stride(by: .day)) { value in
+            AxisMarks(values: .stride(by: .day, count: dayStride)) { value in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
                     .foregroundStyle(.gray.opacity(0.2))
                 AxisTick().foregroundStyle(.gray.opacity(0.5))
@@ -991,17 +1090,23 @@ private struct DailyChart: View {
         .chartYAxisLabel("BPM", position: .top, alignment: .leading)
     }
 
+    /// Label every day for a week, then thin out so labels never collide.
+    private var dayStride: Int {
+        max(1, Int((Double(stats.count) / 7).rounded(.up)))
+    }
+
     private func yDomain() -> ClosedRange<Double> {
         let mins = stats.compactMap(\.minBPM)
         let maxs = stats.compactMap(\.maxBPM)
         guard let lo = mins.min(), let hi = maxs.max() else { return 40...160 }
         let padding = max(5, (hi - lo) * 0.1)
-        return max(30, lo - padding)...(hi + padding)
+        let lower = max(30, lo - padding)
+        return lower...max(lower + 10, hi + padding)
     }
 }
 
 #Preview {
-    DashboardView()
+    NavigationStack { DashboardView() }
         .environmentObject(HeartRateViewModel.preview)
         .environmentObject(UserProfile.shared)
 }

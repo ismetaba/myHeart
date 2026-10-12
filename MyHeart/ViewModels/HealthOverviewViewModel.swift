@@ -13,6 +13,9 @@ final class HealthOverviewViewModel: ObservableObject {
 
     private let health: HealthKitManager
     private let calendar: Calendar
+    /// Bumped on every refresh so a slow, older refresh can't overwrite a newer one.
+    private var generation = 0
+    private var hasBootstrapped = false
 
     init(health: HealthKitManager = .shared, calendar: Calendar = .current) {
         self.health = health
@@ -20,19 +23,37 @@ final class HealthOverviewViewModel: ObservableObject {
     }
 
     func bootstrap() async {
-        // Permission is requested by the heart view model; nothing extra needed
-        // here since the read types are a superset already.
+        // Permission is requested by the heart view model (called first);
+        // its read types already cover everything shown here.
+        hasBootstrapped = true
         await refresh()
     }
 
     func refresh() async {
+        generation += 1
+        let myGeneration = generation
         isLoading = true
-        defer { isLoading = false }
+        defer { if myGeneration == generation { isLoading = false } }
         do {
-            overview = try await buildOverview()
+            let snapshot = try await buildOverview()
+            guard myGeneration == generation else { return }
+            overview = snapshot
+            errorMessage = nil
         } catch {
+            guard myGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Refreshes when the snapshot is from an earlier day or older than
+    /// `maxAge` — used when the app returns to the foreground.
+    func refreshIfStale(maxAge: TimeInterval = 5 * 60) async {
+        guard hasBootstrapped else { return }
+        let generatedAt = overview.generatedAt
+        let isOld = Date().timeIntervalSince(generatedAt) > maxAge
+        let isOtherDay = !calendar.isDate(generatedAt, inSameDayAs: Date())
+        guard isOld || isOtherDay else { return }
+        await refresh()
     }
 
     private func buildOverview() async throws -> HealthOverview {
@@ -47,7 +68,6 @@ final class HealthOverviewViewModel: ObservableObject {
         async let activeEnergyTask     = health.fetchCumulative(.activeEnergyBurned,  unit: .kilocalorie(),                 start: dayStart, end: dayEnd)
         async let basalEnergyTask      = health.fetchCumulative(.basalEnergyBurned,   unit: .kilocalorie(),                 start: dayStart, end: dayEnd)
         async let exerciseMinutesTask  = health.fetchCumulative(.appleExerciseTime,   unit: .minute(),                      start: dayStart, end: dayEnd)
-        async let standTimeTask        = health.fetchCumulative(.appleStandTime,      unit: .hour(),                        start: dayStart, end: dayEnd)
 
         async let activitySummaryTask  = health.fetchTodayActivitySummary(calendar: calendar)
 
@@ -79,7 +99,7 @@ final class HealthOverviewViewModel: ObservableObject {
         async let proteinTask          = health.fetchCumulative(.dietaryProtein,        unit: .gram(),                  start: dayStart, end: dayEnd)
 
         async let sleepTask            = health.fetchLastNightSleep(calendar: calendar)
-        async let mindfulTask          = health.fetchTodayMindfulMinutes(calendar: calendar)
+        async let mindfulTask          = health.fetchTodayMindfulness(calendar: calendar)
 
         async let headphoneTask        = health.fetchDiscreteAverage(.headphoneAudioExposure, unit: .decibelAWeightedSoundPressureLevel(), start: calendar.date(byAdding: .day, value: -1, to: now) ?? now, end: now)
         async let environmentTask      = health.fetchDiscreteAverage(.environmentalAudioExposure, unit: .decibelAWeightedSoundPressureLevel(), start: calendar.date(byAdding: .day, value: -1, to: now) ?? now, end: now)
@@ -103,7 +123,9 @@ final class HealthOverviewViewModel: ObservableObject {
             activeEnergyKcal:     try? await activeEnergyTask,
             basalEnergyKcal:      try? await basalEnergyTask,
             exerciseMinutes:      (try? await exerciseMinutesTask).flatMap { $0.map { Int($0.rounded()) } },
-            standHours:           (try? await standTimeTask).flatMap { $0.map { Int($0.rounded()) } },
+            // Stand hours = hours with ≥1 min of standing, which only the
+            // Activity summary knows. (`appleStandTime` is total *minutes*.)
+            standHours:           activity.map { Int($0.appleStandHours.doubleValue(for: .count()).rounded()) },
             moveGoalKcal:         activity?.activeEnergyBurnedGoal.doubleValue(for: .kilocalorie()),
             exerciseGoalMinutes:  activity?.exerciseTimeGoal?.doubleValue(for: .minute()),
             standGoalHours:       activity?.standHoursGoal?.doubleValue(for: .count())
@@ -175,8 +197,8 @@ final class HealthOverviewViewModel: ObservableObject {
         snap.sleep = try? await sleepTask
 
         // Mindfulness
-        let minutes = (try? await mindfulTask) ?? 0
-        snap.mindfulness = MindfulnessSnapshot(todayMinutes: minutes, sessionsToday: minutes > 0 ? 1 : 0)
+        let mindful = (try? await mindfulTask) ?? (minutes: 0, sessions: 0)
+        snap.mindfulness = MindfulnessSnapshot(todayMinutes: mindful.minutes, sessionsToday: mindful.sessions)
 
         // Audio
         snap.audio = AudioSnapshot(
