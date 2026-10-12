@@ -1,74 +1,75 @@
 # MyHeart
 
-A native iOS (SwiftUI) app that reads your heart rate, resting heart rate, and HRV from Apple Health, displays a dashboard with a trend chart, and exports a shareable PDF report.
+A native iOS (SwiftUI) app that reads your heart rate and other Apple Health data, shows dashboards and insights, exports PDF reports, and can share your live heart rate with family over iCloud.
 
 ## Features
 
-- HealthKit integration (`HKHealthStore`) for heart rate, resting HR, and HRV (SDNN)
-- SwiftUI dashboard with 24h / Week / Month range picker
-- Stats grid: latest, resting, average, min, max, HRV, sample count
-- Live trend chart powered by Swift Charts
-- History tab with the raw samples list
-- One-tap PDF export (`UIGraphicsPDFRenderer` + `PDFKit`) shared via `UIActivityViewController`
-- Pull-to-refresh
+- **Health tab** — today's activity rings, heart, sleep, body, respiratory, mobility, nutrition and audio metrics with sparklines
+- **Heart tab** — 1D / 1W / 1M / 3M / 6M overview (latest, resting, average, HRV with period-over-period deltas, time in zones, insights, trend chart) and a per-day report for up to 31 days
+- **History tab** — every sample in the selected range, filterable by source and elevated readings
+- **PDF export** — overall or daily report, shared via the system share sheet
+- **Family tab** — live heart-rate sharing via CloudKit (`CKShare`), following other people, high-HR and emergency alerts
+- **Settings** — age / max HR (zones), elevated threshold, emergency thresholds and contact, display name
 
 ## Requirements
 
-- iOS 16.0+ (uses Swift Charts)
-- Xcode 15+
+- iOS 16.0+
+- Xcode 16+
 - A real device for HealthKit (the simulator returns no samples unless you seed Health)
 - An Apple Watch (or any HealthKit data source) recording heart rate
+- For live sharing: an Apple Developer team with the iCloud container `iCloud.com.myheart.MyHeart`
 
 ## Project layout
 
 ```
 MyHeart/
-├── MyHeartApp.swift          # @main entry point
-├── ContentView.swift         # Tab container
-├── Models/
-│   └── HeartRateSample.swift
+├── MyHeartApp.swift            # @main entry point, bootstrap + foreground refresh
+├── AppDelegate.swift           # share acceptance, silent push, BG refresh, notifications
+├── ContentView.swift           # tab container
+├── Models/                     # samples, zones, health snapshot, live-share record, profile
 ├── Services/
-│   ├── HealthKitManager.swift
+│   ├── HealthKitManager(+Metrics).swift   # all HealthKit queries + heart-rate observer
+│   ├── LiveStatusPublisher.swift          # HealthKit → live status → CloudKit
+│   ├── LiveSharingService(+Watcher, +Subscriptions).swift
+│   ├── EmergencyEvaluator.swift
+│   ├── SharingError.swift
 │   └── PDFExporter.swift
 ├── ViewModels/
-│   └── HeartRateViewModel.swift
 ├── Views/
-│   ├── DashboardView.swift
-│   ├── HistoryView.swift
-│   └── ShareSheet.swift
 ├── Resources/
-│   ├── Assets.xcassets/
-│   └── Preview Content/
 ├── Info.plist
 └── MyHeart.entitlements
 ```
 
-## Generating the Xcode project
+## Building
 
-The repo uses [XcodeGen](https://github.com/yonaskolb/XcodeGen) to generate `MyHeart.xcodeproj` from `project.yml`, so the project file isn't checked in.
+The Xcode project is checked in (generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen) from `project.yml`). If you regenerate it, set your team again afterwards.
 
-```bash
-brew install xcodegen
-xcodegen generate
-open MyHeart.xcodeproj
-```
+1. Open `MyHeart.xcodeproj`, select the `MyHeart` target → Signing & Capabilities → choose your Team.
+2. Capabilities used (all declared in `MyHeart.entitlements`):
+   - **HealthKit** with **Background Delivery** (live sharing keeps updating while the app is closed)
+   - **iCloud → CloudKit**, container `iCloud.com.myheart.MyHeart`
+   - **Push Notifications** (silent CloudKit pushes for followers)
+   - **Time Sensitive Notifications** (emergency alerts)
+   - **Background Modes**: Remote notifications, Background fetch
+3. Run on a real device and grant Health access.
 
-Then in Xcode:
+Every push is compiled on GitHub Actions (`.github/workflows/build.yml`, iOS Simulator, no signing).
 
-1. Select the `MyHeart` target → Signing & Capabilities → set your Team.
-2. Confirm the **HealthKit** capability is enabled (it's wired up via `MyHeart.entitlements`).
-3. Run on a real device.
-4. On first launch, grant Health access for Heart Rate, Resting Heart Rate, and HRV.
+## Live sharing
 
-## Exporting a PDF
+- The sharer's latest reading lives in one `LiveHeartStatus` record in a custom zone of their **private** CloudKit database; a `CKShare` with public read-only permission makes it visible to anyone who opens the invite link.
+- `LiveStatusPublisher` registers an `HKObserverQuery` with background delivery at launch, so new Apple Watch readings are published even when MyHeart isn't open. Writes are throttled to one every 30 s; zone changes, big jumps and emergencies bypass the throttle.
+- Followers get a silent push (`CKDatabaseSubscription`) plus a ~15 min background refresh, and local notifications for high heart rate (per-person threshold, default 130 bpm) and emergencies.
 
-Tap the share icon in the top right of the Dashboard. The app builds a multi-page PDF (summary, line chart, sample table) into the temp directory and presents the system share sheet so you can save to Files, AirDrop, email, etc.
+### CloudKit schema (important before TestFlight / App Store)
+
+Builds run from Xcode use the CloudKit **Development** environment, where new record fields are created automatically. TestFlight and App Store builds use **Production**, which only accepts fields that were deployed. After running a development build that has written every field (enable sharing and set an emergency contact in Settings once), open the [CloudKit Console](https://icloud.developer.apple.com/) → your container → **Deploy Schema Changes**. The `LiveHeartStatus` record type uses:
+
+`currentBPM, zoneRaw, restingBPM, hrvMs, updatedAt, isElevated, elevatedThreshold, displayName, deviceName, maxHR, note, trendHourlyBPM, trendUpdatedAt, isEmergency, emergencyKind, emergencySince, emergencyContactName, emergencyContactPhone`
 
 ## Privacy
 
-The app only **reads** Health data. Nothing is uploaded — the PDF lives in the app's temp directory until you share or delete it. Usage descriptions are declared in `Info.plist` (`NSHealthShareUsageDescription`).
+MyHeart only **reads** Health data. PDF reports are generated on the device and shared only when you tap Export. Live sharing, when turned on, stores your latest reading in **your own** iCloud account; there is no MyHeart server.
 
-## Notes
-
-- HealthKit calls won't work on iOS Simulator unless you manually add samples in the Health app.
-- If you don't want XcodeGen, you can also create a fresh "iOS App" project in Xcode and drag the `MyHeart/` folder, `Info.plist`, and `MyHeart.entitlements` into it — then enable the HealthKit capability.
+MyHeart is not a medical device. Emergency alerts depend on your phone being online and may be delayed by iOS.

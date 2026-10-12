@@ -706,13 +706,12 @@ private struct ZoneBar: View {
                                 .foregroundStyle(.secondary)
                         )
                 } else {
-                    ForEach(HeartRateZone.allCases) { zone in
-                        let frac = breakdown.fraction(zone)
-                        if frac > 0 {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(zone.color)
-                                .frame(width: max(3, w * CGFloat(frac) - 2))
-                        }
+                    let zones = HeartRateZone.allCases.filter { breakdown.fraction($0) > 0 }
+                    let usable = max(0, w - 2 * CGFloat(max(zones.count - 1, 0)))
+                    ForEach(zones) { zone in
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(zone.color)
+                            .frame(width: usable * CGFloat(breakdown.fraction(zone)))
                     }
                 }
             }
@@ -880,14 +879,13 @@ private struct ZoneStripMini: View {
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
+            let zones = HeartRateZone.allCases.filter { breakdown.fraction($0) > 0 }
+            let usable = max(0, w - CGFloat(max(zones.count - 1, 0)))
             HStack(spacing: 1) {
-                ForEach(HeartRateZone.allCases) { zone in
-                    let frac = breakdown.fraction(zone)
-                    if frac > 0 {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(zone.color)
-                            .frame(width: max(1, w * CGFloat(frac) - 1))
-                    }
+                ForEach(zones) { zone in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(zone.color)
+                        .frame(width: usable * CGFloat(breakdown.fraction(zone)))
                 }
             }
         }

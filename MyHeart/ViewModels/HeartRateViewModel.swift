@@ -180,7 +180,7 @@ final class HeartRateViewModel: ObservableObject {
 
     /// Foreground refresh, skipped when the data is still recent.
     func refreshIfStale(maxAge: TimeInterval = 60) async {
-        guard hasBootstrapped else { return }
+        guard hasBootstrapped, !isLoading else { return }
         if let lastRefresh, Date().timeIntervalSince(lastRefresh) < maxAge { return }
         await refresh()
     }

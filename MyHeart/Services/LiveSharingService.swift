@@ -90,11 +90,15 @@ final class LiveSharingService: ObservableObject {
             await running.value
             return
         }
-        let task = Task { @MainActor in await self.performBootstrap() }
+        let task = Task { @MainActor in
+            await self.performBootstrap()
+            // Cleared inside the task so anyone awaiting it can immediately
+            // start a fresh bootstrap afterwards.
+            self.bootstrapTask = nil
+            self.hasBootstrapped = true
+        }
         bootstrapTask = task
         await task.value
-        bootstrapTask = nil
-        hasBootstrapped = true
     }
 
     /// Cheap catch-up when the app returns to the foreground: re-read my share
@@ -146,27 +150,34 @@ final class LiveSharingService: ObservableObject {
 
     private func handleAccountChange() async {
         let previousStatus = accountStatus
-        await refreshAccountStatus()
-        if previousStatus == .available, accountStatus == .available {
-            // Same signed-in state (iOS also posts this on some launches):
-            // just re-read everything without wiping the UI first.
-            await bootstrap()
-            return
-        }
-        LiveSharingService.log("iCloud account changed — reloading")
-        didLoadSharingState = false
+        // Anything cached from the server may belong to another Apple ID now.
         zoneConfirmed = false
+        didLoadSharingState = false
         cachedRecord = nil
-        pendingStatus = nil
-        flushTask?.cancel()
-        flushTask = nil
-        lastPublishedStatus = nil
-        sharingEnabled = false
-        currentShareURL = nil
-        participantCount = 0
-        followed = []
-        lastError = nil
-        followError = nil
+        await refreshAccountStatus()
+
+        let signedOut = accountStatus == .noAccount || accountStatus == .restricted
+        let signedBackIn = accountStatus == .available
+            && (previousStatus == .noAccount || previousStatus == .restricted)
+        if signedOut || signedBackIn {
+            LiveSharingService.log("iCloud account changed — starting from a clean slate")
+            flushTask?.cancel()
+            flushTask = nil
+            pendingStatus = nil
+            lastPublishedStatus = nil
+            sharingEnabled = false
+            currentShareURL = nil
+            participantCount = 0
+            followed = []
+            lastError = nil
+            followError = nil
+        }
+        // iOS also posts this notification on some launches; re-reading
+        // everything is harmless. Wait for a running bootstrap so the reload
+        // actually happens with the new account.
+        if let running = bootstrapTask {
+            await running.value
+        }
         await bootstrap()
     }
 
