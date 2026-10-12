@@ -32,7 +32,8 @@ final class UserProfile: ObservableObject {
         didSet { storedElevatedThreshold = elevatedThreshold }
     }
 
-    /// Shown to family members when you share. Defaults to the device name.
+    /// Shown to family members when you share. Empty until the user sets it;
+    /// `effectiveDisplayName` supplies the fallback.
     @Published var displayName: String {
         didSet { storedDisplayName = displayName }
     }
@@ -62,8 +63,9 @@ final class UserProfile: ObservableObject {
         self.maxHROverride = defaults.integer(forKey: "profile.maxHROverride")
         let stored = defaults.integer(forKey: "profile.elevatedThreshold")
         self.elevatedThreshold = stored == 0 ? 100 : stored
-        let storedName = defaults.string(forKey: "profile.displayName") ?? ""
-        self.displayName = storedName.isEmpty ? UIDevice.current.name : storedName
+        // Don't pre-fill the device name: since iOS 16 it's just "iPhone",
+        // which makes family alerts read "iPhone — emergency".
+        self.displayName = defaults.string(forKey: "profile.displayName") ?? ""
         let high = defaults.integer(forKey: "profile.criticalHighBPM")
         self.criticalHighBPM = high == 0 ? 160 : high
         let low = defaults.integer(forKey: "profile.criticalLowBPM")
@@ -80,6 +82,11 @@ final class UserProfile: ObservableObject {
     var effectiveDisplayName: String {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? UIDevice.current.name : trimmed
+    }
+
+    /// The user typed a name (rather than relying on the device-name fallback).
+    var hasCustomDisplayName: Bool {
+        !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Max heart rate used for zone computation.

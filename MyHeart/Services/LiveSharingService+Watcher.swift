@@ -9,6 +9,9 @@ extension LiveSharingService {
     func accept(shareMetadata metadata: CKShare.Metadata) async {
         LiveSharingService.log("accept() starting, root=\(metadata.hierarchicalRootRecordID?.recordName ?? "?")")
         followError = nil
+        // Whatever happens next (success or an error to explain), the user
+        // should land on the Family tab after tapping an invite.
+        AppRouter.shared.selectedTab = .family
 
         // Opening your own invite link would fail with an obscure error.
         if metadata.participantRole == .owner {
@@ -33,9 +36,12 @@ extension LiveSharingService {
 
         LiveSharingService.log("accept() succeeded — refreshing followed list")
         // The shared zone can take a moment to show up in the shared DB.
+        let ownerName = metadata.share.recordID.zoneID.ownerName
         for attempt in 0..<3 {
             await refreshFollowed()
-            if followed.contains(where: { $0.zoneID.ownerName == metadata.share.recordID.zoneID.ownerName }) {
+            if followed.contains(where: { $0.zoneID.ownerName == ownerName }) {
+                // Take the user straight to the person they just followed.
+                AppRouter.shared.openFamily(personID: ownerName)
                 break
             }
             if attempt < 2 {

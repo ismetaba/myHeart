@@ -57,6 +57,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         completionHandler([.banner, .list, .sound])
     }
 
+    /// Tapping a follower alert opens that person on the Family tab.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let personID = response.notification.request.content.userInfo["followedPersonID"] as? String
+        Task { @MainActor in
+            AppRouter.shared.openFamily(personID: personID)
+            completionHandler()
+        }
+    }
+
     // MARK: - CloudKit share acceptance (AppDelegate path)
 
     func application(

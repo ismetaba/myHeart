@@ -34,6 +34,13 @@ final class HeartRateViewModel: ObservableObject {
     /// Any other loading problem (shown inline, not as a blocking alert).
     @Published var errorMessage: String?
     @Published var lastRefresh: Date?
+    /// HealthKit doesn't exist on this device (e.g. iPad on iPadOS 16).
+    @Published private(set) var healthUnavailable = false
+
+    /// Nothing has loaded yet — show placeholders / spinners, not "no data".
+    var isFirstLoadPending: Bool {
+        lastRefresh == nil && errorMessage == nil && authorizationError == nil && !healthUnavailable
+    }
 
     static let maxDailyRangeDays = 31
     /// Above this many samples the trend chart switches to aggregated buckets.
@@ -144,6 +151,10 @@ final class HeartRateViewModel: ObservableObject {
     func bootstrap() async {
         do {
             try await health.requestAuthorization()
+        } catch HealthKitError.notAvailable {
+            // Not an error the user can fix — screens explain it inline.
+            healthUnavailable = true
+            return
         } catch {
             authorizationError = error.localizedDescription
             return

@@ -76,6 +76,25 @@ enum HeartRateZone: String, CaseIterable, Identifiable, Hashable {
     }
 
     #if canImport(UIKit)
+    /// Color for zone *text* (labels, percentages, chip text). The fill
+    /// colors above are too light for small text on white, so Light Mode
+    /// uses darker shades (≥ 4.5:1 contrast); Dark Mode keeps the fill color.
+    var textColor: Color {
+        Color(UIColor { traits in
+            traits.userInterfaceStyle == .dark ? uiColor : lightTextUIColor
+        })
+    }
+
+    private var lightTextUIColor: UIColor {
+        switch self {
+        case .resting: return UIColor(red: 0.36, green: 0.42, blue: 0.50, alpha: 1)
+        case .warmUp:  return UIColor(red: 0.20, green: 0.44, blue: 0.55, alpha: 1)
+        case .fatBurn: return UIColor(red: 0.21, green: 0.47, blue: 0.27, alpha: 1)
+        case .cardio:  return UIColor(red: 0.62, green: 0.34, blue: 0.00, alpha: 1)
+        case .peak:    return UIColor(red: 0.69, green: 0.20, blue: 0.29, alpha: 1)
+        }
+    }
+
     /// UIKit color for PDF rendering. Mirrors `color`.
     var uiColor: UIColor {
         switch self {

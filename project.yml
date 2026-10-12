@@ -52,7 +52,7 @@ targets:
         CFBundleIconName: AppIcon
         CKSharingSupported: true
         UILaunchScreen:
-          UIColorName: AccentColor
+          UIColorName: LaunchBackground
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UISupportedInterfaceOrientations~ipad:

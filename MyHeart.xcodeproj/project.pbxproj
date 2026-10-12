@@ -37,6 +37,8 @@
 		FB9B33D4576BD2F0CAD27F69 /* MyHeartApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E27E3746984609BB5FCDBAA6 /* MyHeartApp.swift */; };
 		FBF5A55538FDE3321ED97729 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E369644295D6CE6002655054 /* SettingsView.swift */; };
 		5A1E7C3B9D2F4E6A8B0C1D2E /* LiveStatusPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2F8D4CAE3F5F7B9C1D2E3F /* LiveStatusPublisher.swift */; };
+		7C3A9E1F2B4D6A8C0E1F2A3B /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4BAF203C5E7B9D1F203B4C /* AppState.swift */; };
+		9E5CB0314D6F8CAE20314C5D /* SharedComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF6DC1425E709DBF31425D6E /* SharedComponents.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -73,6 +75,8 @@
 		EAEE3299B124B2271EBAD0D8 /* MyHeart.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyHeart.entitlements; sourceTree = "<group>"; };
 		EC762F303F149D7C079ABB11 /* HeartRateZone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeartRateZone.swift; sourceTree = "<group>"; };
 		6B2F8D4CAE3F5F7B9C1D2E3F /* LiveStatusPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveStatusPublisher.swift; sourceTree = "<group>"; };
+		8D4BAF203C5E7B9D1F203B4C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		AF6DC1425E709DBF31425D6E /* SharedComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedComponents.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -106,6 +110,7 @@
 			isa = PBXGroup;
 			children = (
 				0091DC43FE0E0E93899E3EA8 /* Derived.swift */,
+				8D4BAF203C5E7B9D1F203B4C /* AppState.swift */,
 				2E3425FB3435A912436325FA /* HealthOverview.swift */,
 				0796723C6CDFB0E65D66D2E6 /* HeartRateSample.swift */,
 				EC762F303F149D7C079ABB11 /* HeartRateZone.swift */,
@@ -149,6 +154,7 @@
 				2EB4CA3DC722777F5626F7E5 /* HistoryView.swift */,
 				01FF7AA50A03C2F3997C2558 /* OverviewView.swift */,
 				E369644295D6CE6002655054 /* SettingsView.swift */,
+				AF6DC1425E709DBF31425D6E /* SharedComponents.swift */,
 				03E59F1AEF0B0EAB21E058EA /* ShareSheet.swift */,
 			);
 			path = Views;
@@ -273,6 +279,8 @@
 				ECE69C598ED09637EC29A5C4 /* ShareSheet.swift in Sources */,
 				750B50ED0AA8BA20C4D78256 /* SharingError.swift in Sources */,
 				D51112F540222248BE8E9152 /* UserProfile.swift in Sources */,
+				9E5CB0314D6F8CAE20314C5D /* SharedComponents.swift in Sources */,
+				7C3A9E1F2B4D6A8C0E1F2A3B /* AppState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

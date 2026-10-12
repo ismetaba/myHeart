@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// A period-over-period change for a metric. `lowerIsBetter` governs how the delta
 /// is styled (e.g. resting HR going down is "good"; HRV going down is "bad";
@@ -47,14 +48,27 @@ struct TrendDelta: Hashable {
         }
     }
 
-    /// Color for the arrow/delta text.
+    /// Color for the arrow/delta text. Darker in Light Mode so small text
+    /// stays readable; pair it with `isImprovement` wording, never color alone.
     var tint: Color {
         guard direction != .neutral else { return .secondary }
         if let good = isImprovement {
-            return good ? .green : .orange
+            return good ? Self.goodColor : Self.badColor
         }
         return .secondary
     }
+
+    private static let goodColor = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? .systemGreen
+            : UIColor(red: 0.11, green: 0.49, blue: 0.22, alpha: 1)
+    })
+
+    private static let badColor = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? .systemOrange
+            : UIColor(red: 0.75, green: 0.30, blue: 0.00, alpha: 1)
+    })
 
     /// Short formatted delta, e.g. "-2", "+3".
     var shortString: String? {

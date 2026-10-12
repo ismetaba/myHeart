@@ -10,6 +10,9 @@ final class HealthOverviewViewModel: ObservableObject {
     @Published var overview: HealthOverview = .empty
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
+    /// False until the first refresh has finished (success or failure), so
+    /// the UI can show placeholders instead of a misleading "no data" state.
+    @Published private(set) var hasLoaded = false
 
     private let health: HealthKitManager
     private let calendar: Calendar
@@ -39,9 +42,11 @@ final class HealthOverviewViewModel: ObservableObject {
             guard myGeneration == generation else { return }
             overview = snapshot
             errorMessage = nil
+            hasLoaded = true
         } catch {
             guard myGeneration == generation else { return }
             errorMessage = error.localizedDescription
+            hasLoaded = true
         }
     }
 
