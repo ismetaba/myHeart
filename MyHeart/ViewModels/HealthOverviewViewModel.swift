@@ -146,9 +146,13 @@ final class HealthOverviewViewModel: ObservableObject {
             latestBPM:    latestHR?.value,
             latestBPMAt:  latestHR?.date,
             restingBPM:   restingHR?.value,
+            restingAt:    restingHR?.date,
             hrvMs:        hrv?.value,
+            hrvAt:        hrv?.date,
             walkingHRAvg: walkHR?.value,
-            vo2Max:       vo2?.value
+            walkingHRAt:  walkHR?.date,
+            vo2Max:       vo2?.value,
+            vo2At:        vo2?.date
         )
 
         // Respiratory
@@ -156,7 +160,9 @@ final class HealthOverviewViewModel: ObservableObject {
         let sp = (try? await spo2Task)     ?? nil
         snap.respiratory = RespiratorySnapshot(
             respiratoryRate: rr?.value,
-            oxygenSaturation: sp?.value
+            respiratoryRateAt: rr?.date,
+            oxygenSaturation: sp?.value,
+            oxygenSaturationAt: sp?.date
         )
 
         // Body
@@ -187,7 +193,11 @@ final class HealthOverviewViewModel: ObservableObject {
             walkingAsymmetryPercent:     wa?.value,
             walkingDoubleSupportPercent: wds?.value,
             stairAscentSpeed:            sa?.value,
-            stairDescentSpeed:           sd?.value
+            stairDescentSpeed:           sd?.value,
+            walkingSpeedAt:              ws?.date,
+            walkingStepLengthAt:         wl?.date,
+            walkingAsymmetryAt:          wa?.date,
+            stairAscentSpeedAt:          sa?.date
         )
 
         // Nutrition
@@ -237,7 +247,11 @@ extension HealthOverviewViewModel {
         )
         o.heart = HeartSnapshot(
             latestBPM: 72, latestBPMAt: Date().addingTimeInterval(-120),
-            restingBPM: 58, hrvMs: 48, walkingHRAvg: 102, vo2Max: 42.5
+            restingBPM: 58, restingAt: Date().addingTimeInterval(-3 * 3600),
+            hrvMs: 48, hrvAt: Date().addingTimeInterval(-5 * 3600),
+            walkingHRAvg: 102, walkingHRAt: Date().addingTimeInterval(-2 * 3600),
+            // Weeks old, so the preview shows the "stale" styling.
+            vo2Max: 42.5, vo2At: Date().addingTimeInterval(-18 * 86_400)
         )
         o.sleep = SleepSummary(
             night: Calendar.current.startOfDay(for: Date()).addingTimeInterval(-8 * 3600),
@@ -277,6 +291,7 @@ extension HealthOverviewViewModel {
         }.reversed()
 
         vm.overview = o
+        vm.hasLoaded = true
         return vm
     }
 }

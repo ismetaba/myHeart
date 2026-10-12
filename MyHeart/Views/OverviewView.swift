@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import HealthKit
 
 /// The home tab — a scrollable "Today" overview pulling every category
 /// HealthKit exposes. Each card drills into a category-specific detail view.
@@ -7,36 +8,41 @@ struct OverviewView: View {
     @EnvironmentObject private var viewModel: HealthOverviewViewModel
     @EnvironmentObject private var profile: UserProfile
     @EnvironmentObject private var heartVM: HeartRateViewModel
+    @EnvironmentObject private var router: AppRouter
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private static let healthDataAvailable = HKHealthStore.isHealthDataAvailable()
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     header
-                    activityCard
-                    heartCard
-                    sleepCard
-                    metricsGrid
-                    secondaryGrid
-                    footer
+                    if healthUnavailable {
+                        unavailableCard
+                    } else {
+                        if let message = viewModel.errorMessage {
+                            InlineBanner(message: message, onDismiss: { viewModel.errorMessage = nil })
+                        }
+                        if viewModel.hasLoaded && !hasAnyData {
+                            noDataCard
+                        } else {
+                            cards
+                        }
+                        footer
+                    }
                 }
                 .padding(.horizontal)
                 .padding(.vertical)
+                .readableContentWidth()
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Health")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        Task { await viewModel.refresh() }
-                    } label: {
-                        if viewModel.isLoading {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
+                    if !healthUnavailable {
+                        refreshButton
                     }
                 }
             }
@@ -44,26 +50,145 @@ struct OverviewView: View {
         }
     }
 
+    /// Until the first refresh finishes, cards render this fixed snapshot
+    /// redacted instead of a screen of dashes that looks like "no data".
+    private var overview: HealthOverview {
+        viewModel.hasLoaded ? viewModel.overview : .placeholder
+    }
+
+    private var healthUnavailable: Bool {
+        heartVM.healthUnavailable || !Self.healthDataAvailable
+    }
+
+    private var hasAnyData: Bool {
+        let o = viewModel.overview
+        return o.activity.hasAny || o.heart.hasAny || o.sleep != nil || o.body.hasAny
+            || o.respiratory.hasAny || o.mobility.hasAny || o.nutrition.hasAny
+            || o.mindfulness.hasAny || o.audio.hasAny
+    }
+
+    /// Side by side normally; stacked at accessibility text sizes, where a
+    /// row of three or four stats can't fit.
+    private var rowLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
+    }
+
+    /// Two columns on iPhone, more on iPad, one at accessibility sizes.
+    private var gridColumns: [GridItem] {
+        dynamicTypeSize.isAccessibilitySize
+            ? [GridItem(.flexible())]
+            : [GridItem(.adaptive(minimum: 160), spacing: 12)]
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Task {
+                await viewModel.refresh()
+                if viewModel.errorMessage != nil { Haptics.error() }
+            }
+        } label: {
+            if viewModel.isLoading || !viewModel.hasLoaded {
+                ProgressView()
+            } else {
+                Image(systemName: "arrow.clockwise")
+            }
+        }
+        // The first load is already running; a tap would only restart it.
+        .disabled(!viewModel.hasLoaded)
+        .accessibilityLabel("Refresh")
+    }
+
     // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(Date(), format: .dateTime.weekday(.wide).month(.wide).day())
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text("Today")
-                .font(.largeTitle.bold())
+            if !viewModel.hasLoaded && !healthUnavailable {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading Health data…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Cards
+
+    private var cards: some View {
+        VStack(spacing: 16) {
+            activityCard
+            heartCard
+            sleepCard
+            metricsGrid
+            secondarySections
+        }
+        .redacted(reason: viewModel.hasLoaded ? [] : .placeholder)
+        .disabled(!viewModel.hasLoaded)
+        // The placeholder values aren't real; the header says it's loading.
+        .accessibilityHidden(!viewModel.hasLoaded)
+        .animation(.easeInOut(duration: 0.25), value: viewModel.hasLoaded)
+    }
+
+    // MARK: Empty states
+
+    private var noDataCard: some View {
+        EmptyStateView(
+            systemImage: "heart.text.square",
+            title: "No Health data yet",
+            message: "MyHeart shows heart rate, activity and sleep from Apple Health. They appear here once your iPhone or Apple Watch records them.\n\nAlready have data in Health? Check that MyHeart may read it. \(HealthCopy.permissionPath)"
+        ) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { noDataButtons }
+                VStack(spacing: 12) { noDataButtons }
+            }
+        }
+        .cardBackground()
+    }
+
+    @ViewBuilder
+    private var noDataButtons: some View {
+        Button("Open Health") {
+            if let url = URL(string: "x-apple-health://") {
+                UIApplication.shared.open(url)
+            }
+        }
+        .buttonStyle(.borderedProminent)
+
+        Button("Try Again") {
+            Task { await viewModel.refresh() }
+        }
+        .buttonStyle(.bordered)
+        .disabled(viewModel.isLoading)
+    }
+
+    private var unavailableCard: some View {
+        EmptyStateView(
+            systemImage: "heart.text.square",
+            title: "Apple Health isn't available on this device",
+            message: "You can still follow family members' live heart rate on the Family tab."
+        ) {
+            Button("Go to Family") { router.openFamily() }
+                .buttonStyle(.borderedProminent)
+        }
+        .cardBackground()
     }
 
     // MARK: Activity
 
     private var activityCard: some View {
         NavigationLink {
-            ActivityDetailView(snapshot: viewModel.overview.activity, stepsSeries: viewModel.overview.stepsLast7, energySeries: viewModel.overview.activeEnergyLast7)
+            ActivityDetailView(snapshot: overview.activity, stepsSeries: overview.stepsLast7, energySeries: overview.activeEnergyLast7)
         } label: {
-            ActivityRingsCard(activity: viewModel.overview.activity)
+            ActivityRingsCard(activity: overview.activity)
         }
         .buttonStyle(.plain)
     }
@@ -80,46 +205,81 @@ struct OverviewView: View {
                 iconTint: .pink,
                 title: "Heart"
             ) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(viewModel.overview.heart.latestBPM.map { "\(Int($0.rounded()))" } ?? "—")
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
-                            .foregroundStyle(.pink)
-                            .monospacedDigit()
-                        Text("BPM")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        if let date = viewModel.overview.heart.latestBPMAt {
-                            Text(date, style: .relative)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                if overview.heart.hasAny {
+                    VStack(alignment: .leading, spacing: 10) {
+                        heartHero
+
+                        rowLayout {
+                            miniStat("Resting", value: HealthFormat.int(overview.heart.restingBPM), unit: "bpm",
+                                     spokenTitle: "Resting heart rate", asOf: overview.heart.restingAt)
+                            miniStat("HRV", value: HealthFormat.int(overview.heart.hrvMs), unit: "ms",
+                                     spokenTitle: "Heart rate variability", asOf: overview.heart.hrvAt)
+                            miniStat("Walking HR", value: HealthFormat.int(overview.heart.walkingHRAvg), unit: "bpm",
+                                     spokenTitle: "Walking heart rate average", asOf: overview.heart.walkingHRAt)
+                        }
+
+                        if !overview.restingHRLast14.isEmpty {
+                            VStack(alignment: .leading, spacing: 2) {
+                                TrendSparkline(points: overview.restingHRLast14, color: .pink)
+                                    .frame(height: 36)
+                                Text("Resting HR · last 14 days")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel(restingTrendDescription)
+                            }
+                            .padding(.top, 4)
                         }
                     }
-
-                    HStack(spacing: 14) {
-                        miniStat("Resting", value: HealthFormat.int(viewModel.overview.heart.restingBPM), unit: "bpm")
-                        miniStat("HRV", value: HealthFormat.int(viewModel.overview.heart.hrvMs), unit: "ms")
-                        miniStat("Walking", value: HealthFormat.int(viewModel.overview.heart.walkingHRAvg), unit: "bpm")
-                        miniStat("VO₂", value: HealthFormat.one(viewModel.overview.heart.vo2Max), unit: "")
-                    }
-
-                    if !viewModel.overview.restingHRLast14.isEmpty {
-                        TrendSparkline(points: viewModel.overview.restingHRLast14, color: .pink)
-                            .frame(height: 36)
-                            .padding(.top, 4)
-                    }
+                } else {
+                    Text("No heart data yet. Wear Apple Watch to record heart rate.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
         .buttonStyle(.plain)
     }
 
+    private var heartHero: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if let bpm = overview.heart.latestBPM {
+                Text(HealthFormat.int(bpm))
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .foregroundStyle(.pink)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .accessibilityLabel("Latest heart rate, \(HealthFormat.int(bpm)) beats per minute")
+                Text("BPM")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            } else {
+                Text(HealthFormat.missing)
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .foregroundStyle(.pink)
+                    .accessibilityLabel("No recent heart rate")
+            }
+            Spacer()
+            if let date = overview.heart.latestBPMAt {
+                SampleAgeText(date: date)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .animation(.default, value: overview.heart.latestBPM)
+    }
+
+    private var restingTrendDescription: String {
+        let values = overview.restingHRLast14.map(\.value)
+        guard let lo = values.min(), let hi = values.max() else { return "Resting heart rate, last 14 days" }
+        return "Resting heart rate over the last 14 days, between \(HealthFormat.int(lo)) and \(HealthFormat.int(hi)) beats per minute"
+    }
+
     // MARK: Sleep
 
     @ViewBuilder
     private var sleepCard: some View {
-        if let sleep = viewModel.overview.sleep {
+        if let sleep = overview.sleep {
             NavigationLink {
                 SleepDetailView(sleep: sleep)
             } label: {
@@ -129,30 +289,23 @@ struct OverviewView: View {
                     title: "Sleep"
                 ) {
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(DurationFormat.hoursMinutes(sleep.totalSeconds))
-                                .font(.system(size: 36, weight: .bold, design: .rounded))
-                                .foregroundStyle(.indigo)
-                                .monospacedDigit()
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            DurationHero(
+                                seconds: sleep.totalSeconds,
+                                numberFont: .system(.largeTitle, design: .rounded, weight: .bold),
+                                unitFont: .title3.weight(.semibold),
+                                tint: .indigo
+                            )
                             Text(sleep.isInBedOnly ? "in bed last night" : "asleep last night")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        .animation(.default, value: sleep.totalSeconds)
 
                         SleepPhaseBar(sleep: sleep)
                             .frame(height: 10)
 
-                        HStack(spacing: 14) {
-                            if sleep.hasStages {
-                                phaseLabel(.core, seconds: sleep.core)
-                                phaseLabel(.deep, seconds: sleep.deep)
-                                phaseLabel(.rem,  seconds: sleep.rem)
-                            }
-                            if sleep.unspecified > 0 {
-                                phaseLabel(.asleep, seconds: sleep.unspecified)
-                            }
-                            phaseLabel(.awake, seconds: sleep.awake)
-                        }
+                        phaseLegend(sleep)
 
                         if let bed = sleep.bedtime, let wake = sleep.wakeTime {
                             HStack(spacing: 16) {
@@ -168,10 +321,12 @@ struct OverviewView: View {
             }
             .buttonStyle(.plain)
         } else {
+            // Not a link: there's nothing to open.
             CategoryCard(
                 icon: "bed.double",
                 iconTint: .indigo,
-                title: "Sleep"
+                title: "Sleep",
+                showsChevron: false
             ) {
                 Text("No recent sleep session found. Wear your Apple Watch to bed, or log sleep in Health.")
                     .font(.caption)
@@ -180,10 +335,45 @@ struct OverviewView: View {
         }
     }
 
+    /// One row while it fits; two columns, then a single column, when the
+    /// text is too large for up to five labels side by side.
+    private func phaseLegend(_ sleep: SleepSummary) -> some View {
+        let phases = legendPhases(for: sleep)
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                ForEach(phases, id: \.self) { phase in
+                    phaseLabel(phase, seconds: phase.duration(in: sleep))
+                }
+            }
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                ForEach(Array(stride(from: 0, to: phases.count, by: 2)), id: \.self) { i in
+                    GridRow {
+                        phaseLabel(phases[i], seconds: phases[i].duration(in: sleep))
+                        if i + 1 < phases.count {
+                            phaseLabel(phases[i + 1], seconds: phases[i + 1].duration(in: sleep))
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(phases, id: \.self) { phase in
+                    phaseLabel(phase, seconds: phase.duration(in: sleep))
+                }
+            }
+        }
+    }
+
+    private func legendPhases(for sleep: SleepSummary) -> [SleepPhase] {
+        var phases: [SleepPhase] = sleep.hasStages ? [.core, .deep, .rem] : []
+        if sleep.unspecified > 0 { phases.append(.asleep) }
+        phases.append(.awake)
+        return phases
+    }
+
     // MARK: Metrics Grid — primary tiles
 
     private var metricsGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+        LazyVGrid(columns: gridColumns, spacing: 12) {
             NavigationLink {
                 MetricDetailView(
                     title: "Steps",
@@ -191,19 +381,22 @@ struct OverviewView: View {
                     tint: .green,
                     unit: "steps",
                     kind: .cumulative,
-                    todayValue: viewModel.overview.activity.steps.map { Double($0) },
-                    last7: viewModel.overview.stepsLast7
+                    todayValue: overview.activity.steps.map { Double($0) },
+                    last7: overview.stepsLast7
                 )
             } label: {
                 MetricCard(
                     icon: "figure.walk",
                     tint: .green,
                     title: "Steps",
-                    value: HealthFormat.steps(viewModel.overview.activity.steps),
+                    value: HealthFormat.steps(overview.activity.steps),
                     unit: "steps",
-                    sparkline: viewModel.overview.stepsLast7,
+                    sparkline: completedDaysSparkline(overview.stepsLast7),
                     sparkColor: .green,
-                    subtitle: viewModel.overview.activity.distanceKm.map { HealthFormat.km($0) }
+                    subtitle: HealthOverview.completedDayAverage(overview.stepsLast7).map {
+                        "Daily avg \(HealthFormat.number($0))"
+                    },
+                    isNavigable: true
                 )
             }
             .buttonStyle(.plain)
@@ -215,115 +408,109 @@ struct OverviewView: View {
                     tint: .orange,
                     unit: "kcal",
                     kind: .cumulative,
-                    todayValue: viewModel.overview.activity.activeEnergyKcal,
-                    last7: viewModel.overview.activeEnergyLast7
+                    todayValue: overview.activity.activeEnergyKcal,
+                    last7: overview.activeEnergyLast7
                 )
             } label: {
                 MetricCard(
                     icon: "flame.fill",
                     tint: .orange,
                     title: "Active Energy",
-                    value: HealthFormat.kcal(viewModel.overview.activity.activeEnergyKcal),
-                    unit: "",
-                    sparkline: viewModel.overview.activeEnergyLast7,
+                    value: HealthFormat.number(overview.activity.activeEnergyKcal),
+                    unit: "kcal",
+                    sparkline: completedDaysSparkline(overview.activeEnergyLast7),
                     sparkColor: .orange,
-                    subtitle: viewModel.overview.activity.basalEnergyKcal.map { "+ \(HealthFormat.kcal($0)) basal" }
+                    subtitle: overview.activity.basalEnergyKcal.map { "+ \(HealthFormat.kcal($0)) basal" },
+                    isNavigable: true
                 )
             }
             .buttonStyle(.plain)
 
-            if viewModel.overview.respiratory.oxygenSaturation != nil {
+            if overview.respiratory.oxygenSaturation != nil {
                 MetricCard(
                     icon: "lungs.fill",
                     tint: .teal,
                     title: "Blood Oxygen",
-                    value: HealthFormat.percent(viewModel.overview.respiratory.oxygenSaturation),
+                    value: HealthFormat.percent(overview.respiratory.oxygenSaturation),
                     unit: "",
                     sparkline: [],
                     sparkColor: .teal,
-                    subtitle: viewModel.overview.respiratory.respiratoryRate.map {
-                        "\(Int($0.rounded())) breaths / min"
-                    }
+                    subtitle: overview.respiratory.respiratoryRate.map {
+                        "\(HealthFormat.int($0)) breaths / min"
+                    },
+                    asOf: overview.respiratory.oxygenSaturationAt
                 )
             }
 
-            if viewModel.overview.respiratory.respiratoryRate != nil
-                && viewModel.overview.respiratory.oxygenSaturation == nil {
+            if overview.respiratory.respiratoryRate != nil
+                && overview.respiratory.oxygenSaturation == nil {
                 MetricCard(
                     icon: "wind",
                     tint: .cyan,
                     title: "Respiratory",
-                    value: HealthFormat.one(viewModel.overview.respiratory.respiratoryRate),
+                    value: HealthFormat.one(overview.respiratory.respiratoryRate),
                     unit: "br/min",
                     sparkline: [],
                     sparkColor: .cyan,
-                    subtitle: nil
+                    subtitle: nil,
+                    asOf: overview.respiratory.respiratoryRateAt
                 )
             }
 
-            if let vo2 = viewModel.overview.heart.vo2Max {
+            if let vo2 = overview.heart.vo2Max {
                 MetricCard(
                     icon: "bolt.heart.fill",
                     tint: .purple,
                     title: "VO₂ Max",
-                    value: String(format: "%.1f", vo2),
-                    unit: "ml/kg·min",
+                    value: HealthFormat.number(vo2, fraction: 1),
+                    unit: "mL/kg/min",
                     sparkline: [],
                     sparkColor: .purple,
-                    subtitle: vo2FitnessLevel(vo2)
+                    subtitle: "Cardio fitness",
+                    asOf: overview.heart.vo2At
                 )
             }
 
-            if let flights = viewModel.overview.activity.flightsClimbed, flights > 0 {
-                MetricCard(
-                    icon: "figure.stairs",
-                    tint: .mint,
-                    title: "Floors Climbed",
-                    value: "\(flights)",
-                    unit: "floors",
-                    sparkline: [],
-                    sparkColor: .mint,
-                    subtitle: nil
-                )
-            }
-
-            if viewModel.overview.body.weightKg != nil {
+            if overview.body.weightKg != nil {
+                let weight = HealthFormat.mass(overview.body.weightKg)
                 NavigationLink {
-                    BodyDetailView(snapshot: viewModel.overview.body, weightSeries: viewModel.overview.weightLast30)
+                    BodyDetailView(snapshot: overview.body, weightSeries: overview.weightLast30)
                 } label: {
                     MetricCard(
                         icon: "scalemass.fill",
                         tint: .brown,
                         title: "Body",
-                        value: HealthFormat.kg(viewModel.overview.body.weightKg),
-                        unit: "",
-                        sparkline: viewModel.overview.weightLast30,
+                        value: weight.value,
+                        unit: weight.unit,
+                        sparkline: overview.weightLast30,
                         sparkColor: .brown,
-                        subtitle: viewModel.overview.body.bmi.map { "BMI \(String(format: "%.1f", $0))" }
+                        subtitle: overview.body.bmi.map { "BMI \(HealthFormat.number($0, fraction: 1))" },
+                        isNavigable: true,
+                        asOf: overview.body.weightAt
                     )
                 }
                 .buttonStyle(.plain)
             }
 
-            if viewModel.overview.mindfulness.hasAny {
+            if overview.mindfulness.hasAny {
                 MetricCard(
                     icon: "brain.head.profile",
                     tint: .pink,
                     title: "Mindful",
-                    value: HealthFormat.minutes(viewModel.overview.mindfulness.todayMinutes),
-                    unit: "",
+                    value: HealthFormat.number(overview.mindfulness.todayMinutes),
+                    unit: "min",
                     sparkline: [],
                     sparkColor: .pink,
                     subtitle: "today"
                 )
             }
 
-            if let water = viewModel.overview.nutrition.waterMl, water > 0 {
+            if let water = overview.nutrition.waterMl, water > 0 {
                 MetricCard(
                     icon: "drop.fill",
                     tint: .blue,
                     title: "Water",
-                    value: "\(Int(water.rounded()))",
+                    value: HealthFormat.number(water),
                     unit: "mL",
                     sparkline: [],
                     sparkColor: .blue,
@@ -333,94 +520,199 @@ struct OverviewView: View {
         }
     }
 
-    // MARK: Secondary Grid — mobility, audio, nutrition
+    /// Today's partial total would dip at the right edge every morning, and an
+    /// all-zero week means nothing was recorded — draw no line for that.
+    private func completedDaysSparkline(_ points: [MetricPoint]) -> [MetricPoint] {
+        let past = points.filter { !Calendar.current.isDateInToday($0.date) }
+        return HealthOverview.hasData(past) ? past : []
+    }
 
-    private var secondaryGrid: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("More")
-                .font(.headline)
-                .padding(.leading, 4)
+    // MARK: Secondary sections — mobility, hearing, nutrition, body
 
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                if let v = viewModel.overview.mobility.walkingSpeed {
-                    MiniMetricTile(icon: "figure.walk.motion", tint: .green, title: "Walking Speed", value: String(format: "%.2f", v), unit: "m/s")
-                }
-                if let v = viewModel.overview.mobility.walkingStepLength {
-                    MiniMetricTile(icon: "ruler", tint: .green, title: "Step Length", value: String(format: "%.0f", v * 100), unit: "cm")
-                }
-                if let v = viewModel.overview.mobility.walkingAsymmetryPercent {
-                    MiniMetricTile(icon: "arrow.left.arrow.right", tint: .teal, title: "Asymmetry", value: HealthFormat.percent(v), unit: "")
-                }
-                if let v = viewModel.overview.mobility.stairAscentSpeed {
-                    MiniMetricTile(icon: "figure.stair.stepper", tint: .mint, title: "Stair Ascent", value: String(format: "%.2f", v), unit: "m/s")
-                }
-                if let v = viewModel.overview.audio.headphoneDBA {
-                    MiniMetricTile(icon: "airpodsmax", tint: .purple, title: "Headphones", value: "\(Int(v.rounded()))", unit: "dBA")
-                }
-                if let v = viewModel.overview.audio.environmentalDBA {
-                    MiniMetricTile(icon: "speaker.wave.3.fill", tint: .purple, title: "Environment", value: "\(Int(v.rounded()))", unit: "dBA")
-                }
-                if let v = viewModel.overview.nutrition.dietaryEnergyKcal, v > 0 {
-                    MiniMetricTile(icon: "fork.knife", tint: .orange, title: "Calories In", value: "\(Int(v.rounded()))", unit: "kcal")
-                }
-                if let v = viewModel.overview.nutrition.caffeineMg, v > 0 {
-                    MiniMetricTile(icon: "cup.and.saucer.fill", tint: .brown, title: "Caffeine", value: "\(Int(v.rounded()))", unit: "mg")
-                }
-                if let v = viewModel.overview.nutrition.proteinG, v > 0 {
-                    MiniMetricTile(icon: "leaf.fill", tint: .green, title: "Protein", value: "\(Int(v.rounded()))", unit: "g")
-                }
-                if let v = viewModel.overview.body.heightCm {
-                    MiniMetricTile(icon: "ruler.fill", tint: .gray, title: "Height", value: String(format: "%.0f", v), unit: "cm")
-                }
-                if let v = viewModel.overview.body.bodyFatPercent {
-                    MiniMetricTile(icon: "percent", tint: .brown, title: "Body Fat", value: HealthFormat.percent(v), unit: "")
-                }
-                if let v = viewModel.overview.body.leanBodyMassKg {
-                    MiniMetricTile(icon: "figure.arms.open", tint: .gray, title: "Lean Mass", value: HealthFormat.kg(v), unit: "")
+    /// One small tile in the lower sections. Built as data so a section can
+    /// hide itself (heading included) when it has nothing to show.
+    private struct MiniTile: Identifiable {
+        let icon: String
+        let tint: Color
+        let title: String
+        let measure: FormattedMeasure
+        var asOf: Date? = nil
+        var id: String { title }
+    }
+
+    @ViewBuilder
+    private var secondarySections: some View {
+        tileSection("Mobility", tiles: mobilityTiles)
+        tileSection("Hearing", tiles: hearingTiles)
+        tileSection("Nutrition", tiles: nutritionTiles)
+        tileSection("Body Measurements", tiles: bodyTiles)
+    }
+
+    @ViewBuilder
+    private func tileSection(_ title: LocalizedStringKey, tiles: [MiniTile]) -> some View {
+        if !tiles.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.headline)
+                    .padding(.leading, 4)
+                    .accessibilityAddTraits(.isHeader)
+
+                LazyVGrid(columns: gridColumns, spacing: 12) {
+                    ForEach(tiles) { tile in
+                        MiniMetricTile(
+                            icon: tile.icon,
+                            tint: tile.tint,
+                            title: tile.title,
+                            value: tile.measure.value,
+                            unit: tile.measure.unit,
+                            asOf: tile.asOf
+                        )
+                    }
                 }
             }
         }
+    }
+
+    private var mobilityTiles: [MiniTile] {
+        let m = overview.mobility
+        var tiles: [MiniTile] = []
+        if m.walkingSpeed != nil {
+            tiles.append(MiniTile(icon: "figure.walk.motion", tint: .green, title: "Walking Speed",
+                                  measure: HealthFormat.walkingSpeed(m.walkingSpeed), asOf: m.walkingSpeedAt))
+        }
+        if m.walkingStepLength != nil {
+            tiles.append(MiniTile(icon: "ruler", tint: .green, title: "Step Length",
+                                  measure: HealthFormat.stepLength(m.walkingStepLength), asOf: m.walkingStepLengthAt))
+        }
+        if let v = m.walkingAsymmetryPercent {
+            tiles.append(MiniTile(icon: "arrow.left.arrow.right", tint: .teal, title: "Asymmetry",
+                                  measure: FormattedMeasure(value: HealthFormat.percent(v), unit: ""), asOf: m.walkingAsymmetryAt))
+        }
+        if m.stairAscentSpeed != nil {
+            tiles.append(MiniTile(icon: "figure.stair.stepper", tint: .mint, title: "Stair Ascent",
+                                  measure: HealthFormat.stairSpeed(m.stairAscentSpeed), asOf: m.stairAscentSpeedAt))
+        }
+        return tiles
+    }
+
+    /// Both are averages over the last 24 hours, so the titles say so.
+    private var hearingTiles: [MiniTile] {
+        let a = overview.audio
+        var tiles: [MiniTile] = []
+        if let v = a.headphoneDBA {
+            tiles.append(MiniTile(icon: "airpodsmax", tint: .purple, title: "Headphones (24h)",
+                                  measure: FormattedMeasure(value: HealthFormat.number(v), unit: "dBA")))
+        }
+        if let v = a.environmentalDBA {
+            tiles.append(MiniTile(icon: "speaker.wave.3.fill", tint: .purple, title: "Noise (24h)",
+                                  measure: FormattedMeasure(value: HealthFormat.number(v), unit: "dBA")))
+        }
+        return tiles
+    }
+
+    private var nutritionTiles: [MiniTile] {
+        let n = overview.nutrition
+        var tiles: [MiniTile] = []
+        if let v = n.dietaryEnergyKcal, v > 0 {
+            tiles.append(MiniTile(icon: "fork.knife", tint: .orange, title: "Calories In",
+                                  measure: FormattedMeasure(value: HealthFormat.number(v), unit: "kcal")))
+        }
+        if let v = n.caffeineMg, v > 0 {
+            tiles.append(MiniTile(icon: "cup.and.saucer.fill", tint: .brown, title: "Caffeine",
+                                  measure: FormattedMeasure(value: HealthFormat.number(v), unit: "mg")))
+        }
+        if let v = n.proteinG, v > 0 {
+            tiles.append(MiniTile(icon: "leaf.fill", tint: .green, title: "Protein",
+                                  measure: FormattedMeasure(value: HealthFormat.number(v), unit: "g")))
+        }
+        return tiles
+    }
+
+    private var bodyTiles: [MiniTile] {
+        let b = overview.body
+        // The Body tile and its detail screen already show these.
+        guard b.weightKg == nil else { return [] }
+        var tiles: [MiniTile] = []
+        if b.heightCm != nil {
+            tiles.append(MiniTile(icon: "ruler.fill", tint: .gray, title: "Height",
+                                  measure: HealthFormat.height(b.heightCm)))
+        }
+        if let v = b.bodyFatPercent {
+            tiles.append(MiniTile(icon: "percent", tint: .brown, title: "Body Fat",
+                                  measure: FormattedMeasure(value: HealthFormat.percent(v), unit: "")))
+        }
+        if b.leanBodyMassKg != nil {
+            tiles.append(MiniTile(icon: "figure.arms.open", tint: .gray, title: "Lean Mass",
+                                  measure: HealthFormat.mass(b.leanBodyMassKg)))
+        }
+        return tiles
     }
 
     // MARK: Footer
 
+    @ViewBuilder
     private var footer: some View {
-        Text("Data from Apple Health • Updated \(viewModel.overview.generatedAt, style: .relative) ago")
+        if viewModel.hasLoaded {
+            // Once a minute is enough; a ticking seconds counter is distracting.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                Text("Data from Apple Health • Updated \(updatedLabel(now: context.date))")
+            }
             .font(.caption2)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, 8)
+        }
+    }
+
+    private func updatedLabel(now: Date) -> String {
+        let generatedAt = viewModel.overview.generatedAt
+        if now.timeIntervalSince(generatedAt) < 60 { return "just now" }
+        return generatedAt.formatted(.relative(presentation: .named))
     }
 
     // MARK: Shared helpers
 
-    @ViewBuilder
-    private func miniStat(_ title: String, value: String, unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func miniStat(_ title: String, value: String, unit: String, spokenTitle: String, asOf: Date? = nil) -> some View {
+        let stale = HealthOverview.isStale(asOf)
+        return VStack(alignment: .leading, spacing: 0) {
             Text(title)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
-                if !unit.isEmpty {
+                Text(value)
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(stale ? Color.secondary : Color.primary)
+                if !unit.isEmpty && value != HealthFormat.missing {
                     Text(unit).font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            if stale, let asOf {
+                SampleDateCaption(date: asOf)
+            }
         }
+        // Inside the card's link, so one combined label rather than label + value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            [spokenTitle, HealthFormat.spoken(value, unit: unit), SampleDateCaption.spoken(asOf)]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+        )
     }
 
-    @ViewBuilder
     private func phaseLabel(_ phase: SleepPhase, seconds: TimeInterval) -> some View {
         HStack(spacing: 5) {
-            Circle().fill(phase.color).frame(width: 6, height: 6)
+            Circle().fill(phase.color).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 0) {
                 Text(phase.label)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text(DurationFormat.hoursMinutes(seconds))
+                Text(HealthFormat.duration(seconds))
                     .font(.caption.monospacedDigit().weight(.medium))
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(phase.label), \(HealthFormat.spokenDuration(seconds))")
     }
 
     @ViewBuilder
@@ -433,16 +725,6 @@ struct OverviewView: View {
                     .font(.caption.weight(.medium))
                     .monospacedDigit()
             }
-        }
-    }
-
-    private func vo2FitnessLevel(_ vo2: Double) -> String {
-        switch vo2 {
-        case ..<28: return "Low"
-        case 28..<35: return "Below Average"
-        case 35..<42: return "Average"
-        case 42..<50: return "Above Average"
-        default:      return "Excellent"
         }
     }
 }
@@ -471,12 +753,36 @@ enum SleepPhase {
         case .inBed: return .gray
         }
     }
+    func duration(in sleep: SleepSummary) -> TimeInterval {
+        switch self {
+        case .core: return sleep.core
+        case .deep: return sleep.deep
+        case .rem:  return sleep.rem
+        case .asleep: return sleep.unspecified
+        case .awake: return sleep.awake
+        case .inBed: return sleep.inBed
+        }
+    }
 }
 
 // MARK: - Cards
 
 struct ActivityRingsCard: View {
     let activity: ActivitySnapshot
+    /// Off where the card isn't a link (e.g. on the Activity detail screen).
+    var showsChevron: Bool = true
+    /// Steps / Distance / Floors; off where a fuller grid follows.
+    var showsSummaryRow: Bool = true
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.redactionReasons) private var redactionReasons
+
+    /// Goals only come from the Activity summary (Apple Watch or Fitness).
+    /// Without them every ring would sit empty next to real numbers.
+    /// The loading skeleton still shows the empty tracks.
+    private var showsRings: Bool {
+        activity.hasGoals || redactionReasons.contains(.placeholder)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -487,63 +793,104 @@ struct ActivityRingsCard: View {
                 Text("Activity")
                     .font(.headline)
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 18) {
-                ActivityRings(activity: activity)
-                    .frame(width: 120, height: 120)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    ringStat(color: .red, label: "Move", current: activity.activeEnergyKcal, goal: activity.moveGoalKcal, unit: "kcal")
-                    ringStat(color: .green, label: "Exercise", current: activity.exerciseMinutes.map(Double.init), goal: activity.exerciseGoalMinutes, unit: "min")
-                    ringStat(color: .blue, label: "Stand", current: activity.standHours.map(Double.init), goal: activity.standGoalHours, unit: "hr")
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
+            .unredacted()
 
-            HStack(spacing: 12) {
-                miniMetric("Steps", value: HealthFormat.steps(activity.steps))
-                miniMetric("Distance", value: HealthFormat.km(activity.distanceKm))
-                miniMetric("Floors", value: activity.flightsClimbed.map { "\($0)" } ?? "—")
+            if showsRings {
+                ringsLayout {
+                    ActivityRings(activity: activity)
+                        .frame(width: 120, height: 120)
+                    ringStats
+                }
+            } else {
+                Text("Rings appear once Apple Watch or the Fitness app sets your goals.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ringStats
+            }
+
+            if showsSummaryRow {
+                summaryLayout {
+                    miniMetric("Steps", value: HealthFormat.steps(activity.steps), unit: "")
+                    let distance = HealthFormat.distance(activity.distanceKm)
+                    miniMetric("Distance", value: distance.value, unit: distance.unit)
+                    miniMetric("Floors", value: HealthFormat.number(activity.flightsClimbed.map { Double($0) }), unit: "")
+                }
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        .cardBackground()
     }
 
-    @ViewBuilder
+    /// Rings beside the stats normally; above them at accessibility sizes so
+    /// "412 / 600 kcal" isn't squeezed.
+    private var ringsLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 18))
+    }
+
+    private var summaryLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 12))
+    }
+
+    /// A grid instead of fixed-width labels, so "Exercise" never truncates.
+    private var ringStats: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 8) {
+            ringStat(color: .red, label: "Move", current: activity.activeEnergyKcal, goal: activity.moveGoalKcal, unit: "kcal")
+            ringStat(color: .green, label: "Exercise", current: activity.exerciseMinutes.map(Double.init), goal: activity.exerciseGoalMinutes, unit: "min")
+            ringStat(color: .blue, label: "Stand", current: activity.standHours.map(Double.init), goal: activity.standGoalHours, unit: "hr")
+        }
+    }
+
+    /// The label is neutral text with a colored dot: red / green / blue
+    /// caption text is too low-contrast on the white card.
     private func ringStat(color: Color, label: String, current: Double?, goal: Double?, unit: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(label)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(color)
-                .frame(width: 70, alignment: .leading)
-            Text(current.map { "\(Int($0.rounded()))" } ?? "—")
+        GridRow {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                Text(label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text(HealthFormat.number(current))
                 .font(.subheadline.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(.primary)
-            if let g = goal {
-                Text("/ \(Int(g.rounded())) \(unit)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(unit)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+                .accessibilityLabel(current == nil ? "no data" : HealthFormat.number(current))
+            Text(goal.map { "/ \(HealthFormat.number($0)) \(unit)" } ?? unit)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(
+                    goal.map { "of \(HealthFormat.number($0)) \(HealthFormat.spokenUnit(unit))" }
+                        ?? HealthFormat.spokenUnit(unit)
+                )
         }
     }
 
-    @ViewBuilder
-    private func miniMetric(_ label: String, value: String) -> some View {
+    private func miniMetric(_ label: String, value: String, unit: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(label).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
+                if !unit.isEmpty && value != HealthFormat.missing {
+                    Text(unit).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label), \(HealthFormat.spoken(value, unit: unit))")
     }
 }
 
@@ -572,6 +919,26 @@ struct ActivityRings: View {
                 radius: 27
             )
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Activity rings")
+        .accessibilityValue(ringSummary)
+        .accessibilityHidden(ringSummary.isEmpty)
+    }
+
+    /// "Move 69 percent, Exercise 140 percent" — only rings that have a goal.
+    private var ringSummary: String {
+        let rings: [(name: String, current: Double?, goal: Double?)] = [
+            ("Move", activity.activeEnergyKcal, activity.moveGoalKcal),
+            ("Exercise", activity.exerciseMinutes.map { Double($0) }, activity.exerciseGoalMinutes),
+            ("Stand", activity.standHours.map { Double($0) }, activity.standGoalHours),
+        ]
+        var parts: [String] = []
+        for ring in rings {
+            guard let goal = ring.goal, goal > 0 else { continue }
+            let percent = Int(((ring.current ?? 0) / goal * 100).rounded())
+            parts.append("\(ring.name) \(percent) percent")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func ring(progress: Double, color: Color, lineWidth: CGFloat, radius: CGFloat) -> some View {
@@ -599,6 +966,8 @@ struct CategoryCard<Content: View>: View {
     let icon: String
     let iconTint: Color
     let title: String
+    /// Only where the card is wrapped in a NavigationLink.
+    var showsChevron: Bool = true
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -610,15 +979,18 @@ struct CategoryCard<Content: View>: View {
                 Text(title)
                     .font(.headline)
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .unredacted()
             content()
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        .cardBackground()
     }
 }
 
@@ -632,28 +1004,46 @@ struct MetricCard: View {
     let sparkline: [MetricPoint]
     let sparkColor: Color
     let subtitle: String?
+    /// Draws a chevron. Set it only when the card is wrapped in a NavigationLink.
+    var isNavigable: Bool = false
+    /// Sample date of a "most recent" value, so an old reading isn't taken
+    /// for today's.
+    var asOf: Date? = nil
 
     var body: some View {
+        let stale = HealthOverview.isStale(asOf)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(tint)
+                // Neutral text: the tints are too light for caption text.
                 Text(title)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(tint)
-                Spacer()
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                if isNavigable {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .unredacted()
 
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
                     .font(.title3.weight(.semibold))
                     .monospacedDigit()
-                if !unit.isEmpty {
+                    .foregroundStyle(stale ? Color.secondary : Color.primary)
+                if !unit.isEmpty && value != HealthFormat.missing {
                     Text(unit)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            if stale, let asOf {
+                SampleDateCaption(date: asOf)
             }
 
             if let subtitle {
@@ -671,7 +1061,17 @@ struct MetricCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        .cardBackground()
+        .accessibilityElement(children: .ignore)
+        // A link's label already becomes one button, so fold the value into it.
+        .accessibilityLabel(isNavigable ? "\(title), \(spokenValue)" : title)
+        .accessibilityValue(isNavigable ? "" : spokenValue)
+    }
+
+    private var spokenValue: String {
+        [HealthFormat.spoken(value, unit: unit), SampleDateCaption.spoken(asOf), subtitle]
+            .compactMap { $0 }
+            .joined(separator: ", ")
     }
 }
 
@@ -682,8 +1082,11 @@ struct MiniMetricTile: View {
     let title: String
     let value: String
     let unit: String
+    /// Sample date of a "most recent" value; old readings are dimmed.
+    var asOf: Date? = nil
 
     var body: some View {
+        let stale = HealthOverview.isStale(asOf)
         HStack(spacing: 10) {
             ZStack {
                 Circle().fill(tint.opacity(0.18))
@@ -698,17 +1101,103 @@ struct MiniMetricTile: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
-                    if !unit.isEmpty {
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(stale ? Color.secondary : Color.primary)
+                    if !unit.isEmpty && value != HealthFormat.missing {
                         Text(unit).font(.caption2).foregroundStyle(.secondary)
                     }
+                }
+                if stale, let asOf {
+                    SampleDateCaption(date: asOf)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        .cardBackground(cornerRadius: 12)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(
+            [HealthFormat.spoken(value, unit: unit), SampleDateCaption.spoken(asOf)]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+        )
+    }
+}
+
+/// A sleep duration as large digits with small grey unit letters ("7h 30m"),
+/// so it can't be read as a clock time next to bedtime and wake times.
+struct DurationHero: View {
+    let seconds: TimeInterval
+    let numberFont: Font
+    let unitFont: Font
+    let tint: Color
+
+    var body: some View {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        HStack(alignment: .firstTextBaseline, spacing: 1) {
+            if hours > 0 {
+                Text("\(hours)")
+                    .font(numberFont)
+                    .foregroundStyle(tint)
+                    .contentTransition(.numericText())
+                Text("h")
+                    .font(unitFont)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 4)
+            }
+            Text("\(minutes)")
+                .font(numberFont)
+                .foregroundStyle(tint)
+                .contentTransition(.numericText())
+            Text("m")
+                .font(unitFont)
+                .foregroundStyle(.secondary)
+        }
+        .monospacedDigit()
+        .lineLimit(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(HealthFormat.spokenDuration(seconds))
+    }
+}
+
+/// "2 min. ago" / "Yesterday", refreshed once a minute. Under a minute it
+/// says "Just now" rather than a seconds count that would sit frozen.
+struct SampleAgeText: View {
+    let date: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            Text(Self.label(for: date, now: context.date))
+        }
+    }
+
+    static func label(for date: Date, now: Date) -> String {
+        if now.timeIntervalSince(date) < 60 { return "Just now" }
+        return date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+    }
+}
+
+/// Small "3 days ago" under a value whose latest sample is over a day old.
+struct SampleDateCaption: View {
+    let date: Date
+
+    var body: some View {
+        Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+
+    /// "measured 3 days ago" for VoiceOver, or nil when the value is recent.
+    static func spoken(_ date: Date?) -> String? {
+        guard let date, HealthOverview.isStale(date) else { return nil }
+        return "measured \(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))"
     }
 }
 
@@ -770,6 +1259,8 @@ struct TrendSparkline: View {
 /// Horizontal sleep phase stacked bar.
 struct SleepPhaseBar: View {
     let sleep: SleepSummary
+    /// `.redacted` doesn't mask shapes, so the loading skeleton greys them here.
+    @Environment(\.redactionReasons) private var redactionReasons
 
     var body: some View {
         GeometryReader { geo in
@@ -786,10 +1277,11 @@ struct SleepPhaseBar: View {
             let total = max(visible.reduce(0) { $0 + $1.1 }, 1)
             let spacing: CGFloat = 1
             let usable = max(0, geo.size.width - spacing * CGFloat(max(visible.count - 1, 0)))
+            let isPlaceholder = redactionReasons.contains(.placeholder)
             HStack(spacing: spacing) {
                 ForEach(Array(visible.enumerated()), id: \.offset) { _, part in
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(part.0)
+                        .fill(isPlaceholder ? Color(.systemFill) : part.0)
                         .frame(width: usable * CGFloat(part.1 / total))
                 }
             }
@@ -803,4 +1295,6 @@ struct SleepPhaseBar: View {
         .environmentObject(HealthOverviewViewModel.preview)
         .environmentObject(UserProfile.shared)
         .environmentObject(HeartRateViewModel.preview)
+        .environmentObject(AppRouter.shared)
+        .environmentObject(NotificationPermission.shared)
 }

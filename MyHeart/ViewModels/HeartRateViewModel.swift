@@ -14,6 +14,10 @@ final class HeartRateViewModel: ObservableObject {
     @Published var previousSummary: HeartRateSummary = .empty
     @Published var zoneBreakdown: ZoneBreakdown = .empty
     @Published var selectedRange: OverallRange = .day1
+    /// The range `samples`, `summary` and the deltas were loaded for. Trails
+    /// `selectedRange` while a switch is loading (or after it failed), so
+    /// labels can describe the data actually on screen.
+    @Published private(set) var loadedRange: OverallRange = .day1
 
     // Daily mode state
     @Published var dailyStats: [DailyHeartRateStats] = []
@@ -21,6 +25,9 @@ final class HeartRateViewModel: ObservableObject {
     @Published var dailyZones: [Date: ZoneBreakdown] = [:]
     @Published var dailyStart: Date
     @Published var dailyEnd: Date
+    /// The daily range `dailyStats` belong to; nil until the first daily load.
+    @Published private(set) var loadedDailyStart: Date?
+    @Published private(set) var loadedDailyEnd: Date?
 
     // Derived
     @Published var insights: [Insight] = []
@@ -42,14 +49,26 @@ final class HeartRateViewModel: ObservableObject {
         lastRefresh == nil && errorMessage == nil && authorizationError == nil && !healthUnavailable
     }
 
+    /// A new overall range is loading while the previous range's data is
+    /// still on screen. Plain refreshes of the same range don't count.
+    var isSwitchingRange: Bool {
+        isLoading && mode == .overall && loadedRange != selectedRange
+    }
+
+    /// Daily-mode counterpart of `isSwitchingRange`.
+    var isSwitchingDailyRange: Bool {
+        isLoading && mode == .daily && (loadedDailyStart != dailyStart || loadedDailyEnd != dailyEnd)
+    }
+
     static let maxDailyRangeDays = 31
     /// Above this many samples the trend chart switches to aggregated buckets.
     static let rawChartLimit = 400
     static let chartBucketCount = 180
 
+    /// Raw values are the segmented-control titles (display only, never stored).
     enum ReportMode: String, CaseIterable, Identifiable {
-        case overall = "Overall"
-        case daily = "Daily"
+        case overall = "Trends"
+        case daily = "By Day"
         var id: String { rawValue }
     }
 
@@ -93,7 +112,7 @@ final class HeartRateViewModel: ObservableObject {
 
         var previousTitle: String {
             switch self {
-            case .day1: return "previous 24h"
+            case .day1: return "previous 24 hours"
             case .week1: return "previous 7 days"
             case .month1: return "previous 30 days"
             case .month3: return "previous 3 months"
@@ -254,6 +273,7 @@ final class HeartRateViewModel: ObservableObject {
 
         guard myGeneration == generation else { return }
 
+        loadedRange = range
         samples = fetched
         chartBuckets = fetched.count > Self.rawChartLimit
             ? HeartRateBucket.make(from: fetched, start: start, end: end, maxBuckets: Self.chartBucketCount)
@@ -282,7 +302,8 @@ final class HeartRateViewModel: ObservableObject {
 
     private func refreshDaily(generation myGeneration: Int) async throws {
         let start = dailyStart
-        let end = calendar.date(byAdding: .day, value: 1, to: dailyEnd) ?? dailyEnd
+        let lastDay = dailyEnd
+        let end = calendar.date(byAdding: .day, value: 1, to: lastDay) ?? lastDay
         async let statsTask = health.fetchDailyStats(start: start, end: end, calendar: calendar)
         async let samplesTask = health.fetchHeartRateSamples(
             start: start, end: end, limit: HealthKitManager.noSampleLimit
@@ -306,6 +327,8 @@ final class HeartRateViewModel: ObservableObject {
             )
         }
         dailySamples = fetchedSamples
+        loadedDailyStart = start
+        loadedDailyEnd = lastDay
         recomputeDerived()
     }
 
@@ -386,6 +409,11 @@ final class HeartRateViewModel: ObservableObject {
         return vals.reduce(0, +) / Double(vals.count)
     }
 
+    /// `fetchDailyStats` returns an entry for every day, even days without
+    /// samples, so `dailyStats.isEmpty` doesn't mean "no data".
+    var hasDailyData: Bool { dailyStats.contains { $0.avgBPM != nil } }
+    var daysWithData: Int { dailyStats.filter { $0.avgBPM != nil }.count }
+
     var dailyOverallMin: Double? { dailyStats.compactMap(\.minBPM).min() }
     var dailyOverallMax: Double? { dailyStats.compactMap(\.maxBPM).max() }
     var dailyOverallResting: Double? {
@@ -415,7 +443,7 @@ final class HeartRateViewModel: ObservableObject {
                 out.append(Insight(
                     icon: better ? "arrow.down.circle.fill" : "arrow.up.circle.fill",
                     title: "Resting HR \(better ? "improved" : "rose") \(Int(abs(delta).rounded())) bpm",
-                    detail: "Now \(Int(current.rounded())) vs \(Int(prev.rounded())) \(selectedRange.previousTitle)",
+                    detail: "Now \(Int(current.rounded())) vs \(Int(prev.rounded())) \(loadedRange.previousTitle)",
                     tint: better ? .green : .orange
                 ))
             }
@@ -429,7 +457,7 @@ final class HeartRateViewModel: ObservableObject {
                 out.append(Insight(
                     icon: "waveform.path.ecg",
                     title: "HRV \(better ? "up" : "down") \(Int(abs(delta).rounded())) ms",
-                    detail: "\(Int(current.rounded())) ms vs \(Int(prev.rounded())) \(selectedRange.previousTitle)",
+                    detail: "\(Int(current.rounded())) ms vs \(Int(prev.rounded())) \(loadedRange.previousTitle)",
                     tint: better ? .green : .orange
                 ))
             }
@@ -462,7 +490,7 @@ final class HeartRateViewModel: ObservableObject {
 
         // Peak HR in window
         if let maxBpm = summary.maxBPM, let peakSample = samples.max(by: { $0.bpm < $1.bpm }) {
-            let style: Date.FormatStyle = selectedRange == .day1
+            let style: Date.FormatStyle = loadedRange == .day1
                 ? .dateTime.hour().minute()
                 : .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
             out.append(Insight(
@@ -612,6 +640,8 @@ extension HeartRateViewModel {
             }
         }
         vm.recomputeDerived()
+        // Otherwise `isFirstLoadPending` shows the preview as placeholders.
+        vm.lastRefresh = now
         return vm
     }
 }
