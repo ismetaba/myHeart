@@ -606,7 +606,9 @@ enum PDFExporter {
             guard t <= tMax + 1 else { break }
             let x = plot.minX + CGFloat((t - tMin) / tRange) * plot.width
             drawLine(from: CGPoint(x: x, y: plot.maxY), to: CGPoint(x: x, y: plot.maxY + 3), color: axisColor)
-            drawString(String(format: "%02d", hour % 24), at: CGPoint(x: x, y: plot.maxY + 6), attrs: axisLabelAttrs, align: .center)
+            // Label with the wall-clock hour (differs from `hour` on DST days).
+            let clockHour = calendar.component(.hour, from: Date(timeIntervalSince1970: t))
+            drawString(String(format: "%02d", clockHour), at: CGPoint(x: x, y: plot.maxY + 6), attrs: axisLabelAttrs, align: .center)
         }
 
         let daySamples = samples

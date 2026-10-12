@@ -21,28 +21,32 @@ enum EmergencyEvaluator {
     }
 
     /// The evaluator sees the current sample plus a short recent history
-    /// (assumed to be sorted ascending by date). The history is only used
-    /// for the "sustained" check.
+    /// (any order). `now` must be the time of the current sample — not the
+    /// wall clock — otherwise a single reading that synced a few minutes late
+    /// would look like it had been "sustained" for that long.
     static func evaluate(
         currentBPM: Int,
         recent: [HeartRateSample],
         thresholds: Thresholds = .defaults,
         now: Date = Date()
     ) -> (kind: EmergencyKind?, since: Date?) {
+        let history = recent.filter { $0.date <= now }
+
         // Critical high spike
         if currentBPM >= thresholds.criticalHighBPM {
-            let since = firstMomentAbove(samples: recent, bpm: thresholds.sustainedHighBPM, now: now) ?? now
+            let since = startOfRun(in: history) { $0 >= thresholds.sustainedHighBPM } ?? now
             return (.high, since)
         }
 
         // Critical low
         if currentBPM > 0 && currentBPM <= thresholds.criticalLowBPM {
-            return (.low, now)
+            let since = startOfRun(in: history) { $0 > 0 && $0 <= thresholds.criticalLowBPM } ?? now
+            return (.low, since)
         }
 
         // Sustained high over N minutes
         if currentBPM >= thresholds.sustainedHighBPM {
-            if let since = firstMomentAbove(samples: recent, bpm: thresholds.sustainedHighBPM, now: now),
+            if let since = startOfRun(in: history, where: { $0 >= thresholds.sustainedHighBPM }),
                now.timeIntervalSince(since) >= TimeInterval(thresholds.sustainedMinutes * 60) {
                 return (.sustainedHigh, since)
             }
@@ -51,19 +55,14 @@ enum EmergencyEvaluator {
         return (nil, nil)
     }
 
-    /// Walks `samples` from newest to oldest and returns the timestamp at
-    /// which the value first fell below `bpm`. If every sample is above
-    /// `bpm`, returns the oldest sample's date. Used to compute "since".
-    private static func firstMomentAbove(samples: [HeartRateSample], bpm: Int, now: Date) -> Date? {
-        guard !samples.isEmpty else { return nil }
-        let desc = samples.sorted { $0.date > $1.date }
+    /// Walks `samples` from newest to oldest while `matches` holds and returns
+    /// the date of the oldest sample in that unbroken run (nil if the newest
+    /// sample doesn't match). Used to compute "since".
+    private static func startOfRun(in samples: [HeartRateSample], where matches: (Int) -> Bool) -> Date? {
         var boundary: Date? = nil
-        for s in desc {
-            if Int(s.bpm.rounded()) >= bpm {
-                boundary = s.date
-            } else {
-                break
-            }
+        for s in samples.sorted(by: { $0.date > $1.date }) {
+            guard matches(Int(s.bpm.rounded())) else { break }
+            boundary = s.date
         }
         return boundary
     }

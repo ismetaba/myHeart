@@ -350,16 +350,6 @@ extension HealthKitManager {
         return result
     }
 
-    // MARK: - Recent samples for sustained-emergency detection
-
-    /// Fetches samples from the last `minutes`. Used by the emergency evaluator
-    /// to decide whether an elevated BPM has been sustained.
-    func fetchRecentSamples(minutes: Int = 15) async throws -> [HeartRateSample] {
-        let end = Date()
-        let start = end.addingTimeInterval(-Double(minutes) * 60)
-        return try await fetchHeartRateSamples(start: start, end: end, limit: HealthKitManager.noSampleLimit)
-    }
-
     // MARK: - Mindfulness
 
     func fetchTodayMindfulness(calendar: Calendar = .current) async throws -> (minutes: Double, sessions: Int) {

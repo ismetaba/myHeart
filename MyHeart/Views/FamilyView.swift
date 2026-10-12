@@ -718,14 +718,19 @@ private struct FollowedRow: View {
                 Text(person.status.displayName)
                     .font(.subheadline.weight(.semibold))
                 HStack(spacing: 6) {
-                    Text(person.status.zone.label)
-                        .foregroundStyle(person.status.zone.color)
-                    Text("•")
-                    Text("\(person.status.updatedAt, style: .relative) ago")
-                        .foregroundStyle(.secondary)
-                    if person.status.isStale {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .foregroundStyle(.orange)
+                    if person.status.hasReading {
+                        Text(person.status.zone.label)
+                            .foregroundStyle(person.status.zone.color)
+                        Text("•")
+                        Text("\(person.status.updatedAt, style: .relative) ago")
+                            .foregroundStyle(.secondary)
+                        if person.status.isStale {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(.orange)
+                        }
+                    } else {
+                        Text("No reading yet")
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .font(.caption2)
@@ -734,7 +739,7 @@ private struct FollowedRow: View {
             Spacer()
 
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("\(person.status.currentBPM)")
+                Text(person.status.hasReading ? "\(person.status.currentBPM)" : "—")
                     .font(.title3.weight(.semibold).monospacedDigit())
                     .foregroundStyle(person.status.isStale ? Color.secondary : (person.status.isElevated ? Color.red : Color.pink))
                 Text("bpm")

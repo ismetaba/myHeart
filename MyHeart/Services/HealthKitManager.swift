@@ -129,13 +129,16 @@ final class HealthKitManager {
         try await store.requestAuthorization(toShare: [], read: readTypes)
     }
 
-    /// Whether the permission sheet has already been shown at least once.
+    /// Whether the heart-rate permission has already been asked for.
     /// HealthKit never reveals whether *read* access was granted, only whether
-    /// asking again would show UI.
+    /// asking again would show UI. Checked for heart rate alone so that adding
+    /// a new read type in an update doesn't stop background delivery until
+    /// the user reopens the app.
     func hasRequestedAuthorization() async -> Bool {
         guard HKHealthStore.isHealthDataAvailable() else { return false }
+        let heartRate: Set<HKObjectType> = [heartRateType]
         return await withCheckedContinuation { continuation in
-            store.getRequestStatusForAuthorization(toShare: [], read: readTypes) { status, _ in
+            store.getRequestStatusForAuthorization(toShare: [], read: heartRate) { status, _ in
                 continuation.resume(returning: status == .unnecessary)
             }
         }

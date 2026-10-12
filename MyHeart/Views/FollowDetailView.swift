@@ -145,13 +145,15 @@ struct FollowDetailView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(liveColor)
                 Spacer()
-                Text("Measured \(current.status.updatedAt, style: .relative) ago")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                if current.status.hasReading {
+                    Text("Measured \(current.status.updatedAt, style: .relative) ago")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("\(current.status.currentBPM)")
+                Text(current.status.hasReading ? "\(current.status.currentBPM)" : "—")
                     .font(.system(size: 96, weight: .bold, design: .rounded))
                     .foregroundStyle(current.status.isEmergency ? Color.red : (current.status.isElevated ? Color.orange : Color.pink))
                     .monospacedDigit()
@@ -166,7 +168,9 @@ struct FollowDetailView: View {
             if current.status.isStale {
                 HStack(spacing: 6) {
                     Image(systemName: "clock.arrow.circlepath")
-                    Text("No new reading for over \(Int(LiveHeartStatus.staleAfter / 60)) minutes")
+                    Text(current.status.hasReading
+                         ? "No new reading for over \(Int(LiveHeartStatus.staleAfter / 60)) minutes"
+                         : "No heart-rate reading shared yet")
                 }
                 .font(.caption)
                 .foregroundStyle(.orange)

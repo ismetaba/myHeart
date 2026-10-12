@@ -238,6 +238,7 @@ final class LiveSharingService: ObservableObject {
             }
             didLoadSharingState = true
         } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            if error.code == .zoneNotFound { zoneConfirmed = false }
             cachedRecord = nil
             applyShareState(nil)
             lastPublishedStatus = nil
@@ -288,7 +289,12 @@ final class LiveSharingService: ObservableObject {
             record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
             status.apply(to: record)
             LiveSharingService.log("fetched existing record, share ref: \(record.share?.recordID.recordName ?? "nil")")
-        } catch let error as CKError where error.code == .unknownItem {
+        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            if error.code == .zoneNotFound {
+                // The zone was deleted (e.g. "Delete data" in iCloud settings).
+                zoneConfirmed = false
+                await ensureZoneExists()
+            }
             LiveSharingService.log("no existing record, creating new")
             record = CKRecord(
                 recordType: CloudKitConfig.RecordType.liveHeartStatus,
@@ -467,6 +473,7 @@ final class LiveSharingService: ObservableObject {
 
     private func markSharingStopped() {
         cachedRecord = nil
+        zoneConfirmed = false
         pendingStatus = nil
         sharingEnabled = false
         currentShareURL = nil

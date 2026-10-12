@@ -30,6 +30,10 @@ final class LiveStatusPublisher {
     /// workout spike must not raise an alarm hours later.
     private let freshSampleWindow: TimeInterval = 15 * 60
 
+    private var runningPublish: Task<Void, Never>?
+    private var rerunRequested = false
+    private var rerunImmediate = false
+
     private init(health: HealthKitManager = .shared) {
         self.health = health
     }
@@ -72,7 +76,32 @@ final class LiveStatusPublisher {
     /// Builds a status from the newest HealthKit data and publishes it if
     /// live sharing is on. `immediate` bypasses the write throttle — used for
     /// background wakes, where a delayed flush might never run.
+    ///
+    /// Runs are serialized: a call made while one is in flight schedules one
+    /// more pass and waits for it. Otherwise a slow run holding an older
+    /// sample could finish last and overwrite a newer (e.g. emergency) status.
     func publishLatest(immediate: Bool? = nil) async {
+        if let running = runningPublish {
+            rerunRequested = true
+            if immediate == true { rerunImmediate = true }
+            await running.value
+            return
+        }
+        let task = Task { @MainActor in
+            var nextImmediate = immediate
+            repeat {
+                self.rerunRequested = false
+                await self.performPublish(immediate: nextImmediate)
+                nextImmediate = self.rerunImmediate ? true : nil
+                self.rerunImmediate = false
+            } while self.rerunRequested
+            self.runningPublish = nil
+        }
+        runningPublish = task
+        await task.value
+    }
+
+    private func performPublish(immediate: Bool?) async {
         let sharing = LiveSharingService.shared
         await sharing.prepareForPublishing()
         guard sharing.sharingEnabled else { return }
@@ -97,14 +126,25 @@ final class LiveStatusPublisher {
         var emergencyKind: EmergencyKind?
         var emergencySince: Date?
         if Date().timeIntervalSince(latest.date) <= freshSampleWindow {
-            let recent = (try? await health.fetchRecentSamples(minutes: 15)) ?? [latest]
+            // History is the 15 minutes leading up to the newest sample, and
+            // durations are measured to that sample's time — see the evaluator.
+            let recent = (try? await health.fetchHeartRateSamples(
+                start: latest.date.addingTimeInterval(-15 * 60),
+                end: latest.date.addingTimeInterval(1),
+                limit: HealthKitManager.noSampleLimit
+            )) ?? [latest]
             let thresholds = EmergencyEvaluator.Thresholds(
                 criticalHighBPM: profile.criticalHighBPM,
                 criticalLowBPM: profile.criticalLowBPM,
                 sustainedHighBPM: max(profile.elevatedThreshold, 120),
                 sustainedMinutes: 10
             )
-            let result = EmergencyEvaluator.evaluate(currentBPM: bpm, recent: recent, thresholds: thresholds)
+            let result = EmergencyEvaluator.evaluate(
+                currentBPM: bpm,
+                recent: recent,
+                thresholds: thresholds,
+                now: latest.date
+            )
             emergencyKind = result.kind
             emergencySince = result.since
         }

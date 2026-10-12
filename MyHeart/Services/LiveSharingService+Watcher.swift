@@ -201,8 +201,10 @@ extension LiveSharingService {
         }
         followed.removeAll { $0.id == person.id }
         let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: "lastAlertReading.\(person.id)")
-        defaults.removeObject(forKey: "lastAlert.\(person.id)")
+        for kind in AlertKind.allCases {
+            defaults.removeObject(forKey: kind.readingKey(person.id))
+            defaults.removeObject(forKey: kind.timeKey(person.id))
+        }
         return true
     }
 }

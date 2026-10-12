@@ -50,36 +50,58 @@ extension LiveSharingService {
     ///
     /// An alert only fires for a *new* reading (one we haven't alerted on
     /// before) that is still fresh, so a stale 130 BPM from hours ago doesn't
-    /// re-alert on every refresh. Repeats for the same person are rate-limited
-    /// (10 min for high-HR alerts, 2 min for emergencies).
+    /// re-alert on every refresh. Emergency and high-HR alerts are tracked
+    /// separately, so a recent high-HR alert never holds back an emergency.
+    /// Repeats are rate-limited per kind (2 min for emergencies, 10 min for
+    /// high-HR alerts).
     func evaluateAlerts() async {
         let defaults = UserDefaults.standard
-        let now = Date()
+        let now = Date().timeIntervalSince1970
         for person in followed {
             let status = person.status
-            guard !status.isStale else { continue }
-
-            let thresholdEnabled = FollowAlertSettings.isEnabled(for: person.id, defaults: defaults)
-            let threshold = FollowAlertSettings.threshold(for: person.id, defaults: defaults)
-            let shouldFireThreshold = thresholdEnabled && status.currentBPM >= threshold
-            let shouldFireEmergency = status.isEmergency
-
-            guard shouldFireThreshold || shouldFireEmergency else { continue }
-
-            let lastReadingKey = "lastAlertReading.\(person.id)"
-            let lastAlertKey = "lastAlert.\(person.id)"
+            guard status.hasReading, !status.isStale else { continue }
 
             let readingStamp = status.updatedAt.timeIntervalSince1970
-            if defaults.double(forKey: lastReadingKey) >= readingStamp { continue }
+            let threshold = FollowAlertSettings.threshold(for: person.id, defaults: defaults)
 
-            let cooldown: TimeInterval = shouldFireEmergency ? 120 : 600
-            if now.timeIntervalSince1970 - defaults.double(forKey: lastAlertKey) < cooldown { continue }
+            func isDue(_ kind: AlertKind) -> Bool {
+                defaults.double(forKey: kind.readingKey(person.id)) < readingStamp
+                    && now - defaults.double(forKey: kind.timeKey(person.id)) >= kind.cooldown
+            }
+            func markHandled(_ kind: AlertKind) {
+                defaults.set(readingStamp, forKey: kind.readingKey(person.id))
+                defaults.set(now, forKey: kind.timeKey(person.id))
+            }
 
-            defaults.set(readingStamp, forKey: lastReadingKey)
-            defaults.set(now.timeIntervalSince1970, forKey: lastAlertKey)
-
-            await fireLocalNotification(for: person, isEmergency: shouldFireEmergency, threshold: threshold)
+            if status.isEmergency {
+                guard isDue(.emergency) else { continue }
+                markHandled(.emergency)
+                // The emergency alert already says how high it is.
+                markHandled(.highHeartRate)
+                await fireLocalNotification(for: person, isEmergency: true, threshold: threshold)
+            } else if FollowAlertSettings.isEnabled(for: person.id, defaults: defaults),
+                      status.currentBPM >= threshold,
+                      isDue(.highHeartRate) {
+                markHandled(.highHeartRate)
+                await fireLocalNotification(for: person, isEmergency: false, threshold: threshold)
+            }
         }
+    }
+
+    /// Alert bookkeeping per kind, stored in UserDefaults per followed person.
+    enum AlertKind: String, CaseIterable {
+        case emergency
+        case highHeartRate = "high"
+
+        var cooldown: TimeInterval {
+            switch self {
+            case .emergency:     return 120
+            case .highHeartRate: return 600
+            }
+        }
+
+        func readingKey(_ personID: String) -> String { "lastAlertReading.\(rawValue).\(personID)" }
+        func timeKey(_ personID: String) -> String { "lastAlert.\(rawValue).\(personID)" }
     }
 
     private func fireLocalNotification(for person: FollowedPerson, isEmergency: Bool, threshold: Int) async {

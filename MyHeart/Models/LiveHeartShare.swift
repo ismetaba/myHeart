@@ -117,8 +117,12 @@ struct LiveHeartStatus: Hashable, Identifiable {
         Date().timeIntervalSince(updatedAt)
     }
 
+    /// False for the placeholder written when sharing starts before any
+    /// heart-rate sample exists.
+    var hasReading: Bool { currentBPM > 0 }
+
     var isStale: Bool {
-        secondsSinceUpdate > Self.staleAfter
+        !hasReading || secondsSinceUpdate > Self.staleAfter
     }
 
     /// An emergency flag only means something while the data is fresh. If the
