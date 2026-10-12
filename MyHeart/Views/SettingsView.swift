@@ -1,84 +1,73 @@
 import SwiftUI
+import UIKit
+import UserNotifications
+import Contacts
+import ContactsUI
 
 struct SettingsView: View {
     @EnvironmentObject private var viewModel: HeartRateViewModel
+    @EnvironmentObject private var sharing: LiveSharingService
+    @EnvironmentObject private var notifications: NotificationPermission
+    @EnvironmentObject private var router: AppRouter
+    @Environment(\.openURL) private var openURL
     @ObservedObject var profile: UserProfile
 
     @State private var useManualMax: Bool = false
     @State private var manualMax: Int = 190
+    /// Bumped to open the contact picker; see `ContactPickerPresenter`.
+    @State private var contactPickerRequest = 0
+    @State private var confirmRestoreDefaults = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case displayName, contactName, phone
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                profileSection
-                sharingSection
-                emergencySection
+                // Age / max HR sit directly above the zones they drive, so a
+                // change is visible right away.
+                heartSection
                 zonesSection
-                thresholdsSection
+                sharingSection
+                emergencyContactSection
+                alertsSection
+                notificationsSection
                 healthSection
                 aboutSection
             }
             .navigationTitle("Settings")
+            .scrollDismissesKeyboard(.interactively)
+            // Once on the Form, not per field: per-field keyboard toolbars
+            // show duplicate Done buttons on iOS 16. The phone pad has no
+            // return key, so this is the only way to close it.
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                }
+            }
+            .background {
+                ContactPickerPresenter(request: contactPickerRequest) { name, phone in
+                    profile.emergencyContactName = name
+                    profile.emergencyContact = phone
+                }
+            }
             .onAppear(perform: syncLocalState)
+            .task { await notifications.refresh() }
         }
     }
 
-    private var emergencySection: some View {
-        Section {
-            Stepper(value: $profile.criticalHighBPM, in: 120...220, step: 5) {
-                LabeledRow(label: "Critical High", value: "\(profile.criticalHighBPM) bpm")
-            }
-            Stepper(value: $profile.criticalLowBPM, in: 30...60, step: 2) {
-                LabeledRow(label: "Critical Low", value: "\(profile.criticalLowBPM) bpm")
-            }
+    // MARK: Your heart
 
-            HStack {
-                Text("Contact Name")
-                Spacer()
-                TextField("Optional", text: $profile.emergencyContactName)
-                    .multilineTextAlignment(.trailing)
-                    .textContentType(.name)
-            }
-            HStack {
-                Text("Phone")
-                Spacer()
-                TextField("+1 555 555 5555", text: $profile.emergencyContact)
-                    .multilineTextAlignment(.trailing)
-                    .textContentType(.telephoneNumber)
-                    .keyboardType(.phonePad)
-            }
-        } header: {
-            Text("Emergency")
-        } footer: {
-            Text("While you share live, a critical reading (or \(max(profile.elevatedThreshold, 120))+ bpm for 10+ minutes) sends family members a time-sensitive alert. The contact above is shared with the people you invite so they can call it in one tap. Readings during a workout can trigger this too.")
-        }
-    }
-
-    private var sharingSection: some View {
-        Section {
-            HStack {
-                Text("Display Name")
-                Spacer()
-                TextField(UIDevice.current.name, text: $profile.displayName)
-                    .multilineTextAlignment(.trailing)
-                    .textContentType(.name)
-                    .submitLabel(.done)
-                    .foregroundStyle(.primary)
-            }
-        } header: {
-            Text("Live Sharing")
-        } footer: {
-            Text("This is the name family members see when you share your heart live. Leave it empty to use your device name.")
-        }
-    }
-
-    // MARK: Sections
-
-    private var profileSection: some View {
+    private var heartSection: some View {
         Section {
             Stepper(value: $profile.age, in: 10...100) {
                 LabeledRow(label: "Age", value: "\(profile.age)")
             }
+            .accessibilityLabel("Age")
+            .accessibilityValue("\(profile.age) years")
 
             Toggle(isOn: $useManualMax) {
                 Text("Override max HR")
@@ -95,6 +84,8 @@ struct SettingsView: View {
                 Stepper(value: $manualMax, in: 120...220) {
                     LabeledRow(label: "Max HR", value: "\(manualMax) bpm")
                 }
+                .accessibilityLabel("Max HR")
+                .accessibilityValue("\(manualMax) beats per minute")
                 .onChange(of: manualMax) { newValue in
                     if useManualMax { profile.maxHROverride = newValue }
                 }
@@ -104,9 +95,10 @@ struct SettingsView: View {
                     value: "\(profile.formulaMaxHR) bpm",
                     secondary: "220 − age"
                 )
+                .accessibilityElement(children: .combine)
             }
         } header: {
-            Text("Profile")
+            Text("Your Heart")
         } footer: {
             Text("Max HR drives your five heart-rate zones. The formula is a rough estimate — if you know your real max from a lab or ramp test, override it here.")
         }
@@ -119,9 +111,10 @@ struct SettingsView: View {
                     ZStack {
                         Circle().fill(zone.color.opacity(0.18))
                         Image(systemName: zone.systemImage)
-                            .foregroundStyle(zone.color)
+                            .foregroundStyle(zone.textColor)
                     }
                     .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(zone.label)
@@ -136,53 +129,302 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 2)
+                .accessibilityElement(children: .combine)
             }
         } header: {
             Text("Zones at \(Int(profile.maxHR)) bpm max")
         }
     }
 
-    private var thresholdsSection: some View {
+    // MARK: Live sharing
+
+    private var sharingSection: some View {
         Section {
-            Stepper(value: $profile.elevatedThreshold, in: 80...180, step: 5) {
-                LabeledRow(
-                    label: "Elevated HR",
-                    value: "\(profile.elevatedThreshold) bpm",
-                    secondary: "used for flags & insights"
-                )
+            // Sharing is started and stopped in the Family tab; this row only
+            // reports the state and takes you there.
+            LabeledContent("Status") {
+                Text(sharingStatusText)
+            }
+            Button(sharing.sharingEnabled ? "Manage in Family Tab" : "Start Sharing in Family Tab") {
+                router.openFamily()
+            }
+
+            FieldRow(label: "Display Name") {
+                TextField("Display Name", text: $profile.displayName, prompt: Text("Your name"))
+                    .textContentType(.givenName)
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.done)
+                    .focused($focusedField, equals: .displayName)
             }
         } header: {
-            Text("Thresholds")
+            Text("Live Sharing")
         } footer: {
-            Text("Samples at or above this value are flagged in History and counted in the \"elevated time\" insight. Default 100 bpm.")
+            if profile.hasCustomDisplayName {
+                Text("Family sees “\(profile.effectiveDisplayName)” on your live card, invites and alerts.")
+            } else {
+                Label {
+                    Text("Add your name so family knows who an alert is about. Until then they see “\(UIDevice.current.name)”.")
+                } icon: {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
         }
     }
 
-    private var healthSection: some View {
+    private var sharingStatusText: String {
+        guard sharing.sharingEnabled else { return "Off" }
+        switch sharing.participantCount {
+        case 0: return "On · no one has joined yet"
+        case 1: return "On · 1 person following"
+        default: return "On · \(sharing.participantCount) people following"
+        }
+    }
+
+    private var emergencyContactSection: some View {
         Section {
             Button {
-                if let url = URL(string: "x-apple-health://") {
-                    UIApplication.shared.open(url)
-                }
+                focusedField = nil
+                contactPickerRequest += 1
             } label: {
-                Label("Open Apple Health", systemImage: "heart.text.square.fill")
+                Label("Choose from Contacts", systemImage: "person.crop.circle.badge.plus")
             }
-            Text("Change MyHeart's permissions in Health → Sharing → Data Access & Devices → MyHeart.")
-                .font(.caption)
+
+            // No textContentType on these two: name / phone content types
+            // make QuickType suggest the user's *own* details from their Me
+            // card, and the emergency contact must be someone else.
+            FieldRow(label: "Name") {
+                TextField("Contact Name", text: $profile.emergencyContactName, prompt: Text("Name"))
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .submitLabel(.next)
+                    .focused($focusedField, equals: .contactName)
+                    .onSubmit { focusedField = .phone }
+            }
+            FieldRow(label: "Phone") {
+                TextField("Contact Phone", text: $profile.emergencyContact, prompt: Text("Phone number"))
+                    .keyboardType(.phonePad)
+                    .focused($focusedField, equals: .phone)
+            }
+
+            // Validate once the user has left the fields, not on every keystroke.
+            if !isEditingContact, let warning = contactWarning {
+                WarningRow(text: warning)
+            } else if !isEditingContact, profile.hasEmergencyContact {
+                Label {
+                    Text("Family sees: Call \(contactPreviewText)")
+                } icon: {
+                    Image(systemName: "phone.fill")
+                }
+                .font(.footnote)
                 .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Emergency Contact")
+        } footer: {
+            Text("Shared with the people you invite, so they can call this person in one tap from your live card.")
+        }
+    }
+
+    private var isEditingContact: Bool {
+        focusedField == .contactName || focusedField == .phone
+    }
+
+    private var contactWarning: String? {
+        let phone = profile.emergencyContact.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = profile.emergencyContactName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Followers' Call button keeps only digits and "+", so anything
+        // without a few digits silently does nothing in an emergency.
+        if !phone.isEmpty && phone.filter({ "0123456789".contains($0) }).count < 3 {
+            return "This doesn't look like a phone number — family's Call button won't work."
+        }
+        // Matches `hasEmergencyContact`: without a phone nothing is shared.
+        if phone.isEmpty && !name.isEmpty {
+            return "Add a phone number — family only sees the contact when there is one."
+        }
+        return nil
+    }
+
+    private var contactPreviewText: String {
+        let phone = profile.emergencyContact.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = profile.emergencyContactName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? phone : "\(name) · \(phone)"
+    }
+
+    // MARK: Alerts
+
+    /// Elevated must stay below Critical High (and vice versa), otherwise the
+    /// sustained-high alert can never fire before the acute one. The outer
+    /// clamps keep the ranges valid even for out-of-range stored values.
+    private var elevatedRange: ClosedRange<Int> {
+        80...max(80, min(180, profile.criticalHighBPM - 5))
+    }
+
+    private var criticalHighRange: ClosedRange<Int> {
+        min(220, max(120, profile.elevatedThreshold + 5))...220
+    }
+
+    private var alertsSection: some View {
+        Section {
+            Stepper(value: $profile.criticalLowBPM, in: 30...60, step: 2) {
+                LabeledRow(label: "Critical Low", value: "\(profile.criticalLowBPM) bpm")
+            }
+            .accessibilityLabel("Critical Low")
+            .accessibilityValue("\(profile.criticalLowBPM) beats per minute")
+
+            Stepper(value: $profile.elevatedThreshold, in: elevatedRange, step: 5) {
+                LabeledRow(
+                    label: "Elevated HR",
+                    value: "\(profile.elevatedThreshold) bpm",
+                    secondary: "flags & sustained alert"
+                )
+            }
+            .accessibilityLabel("Elevated heart rate")
+            .accessibilityValue("\(profile.elevatedThreshold) beats per minute")
+
+            Stepper(value: $profile.criticalHighBPM, in: criticalHighRange, step: 5) {
+                LabeledRow(label: "Critical High", value: "\(profile.criticalHighBPM) bpm")
+            }
+            .accessibilityLabel("Critical High")
+            .accessibilityValue("\(profile.criticalHighBPM) beats per minute")
+
+            LabeledRow(
+                label: "Sustained high",
+                value: "≥ \(profile.sustainedHighBPM) bpm for \(UserProfile.sustainedHighMinutes) min",
+                secondary: "follows Elevated HR, minimum \(UserProfile.sustainedHighFloorBPM)"
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Sustained high")
+            .accessibilityValue("\(profile.sustainedHighBPM) beats per minute or more for \(UserProfile.sustainedHighMinutes) minutes. Follows Elevated heart rate, minimum \(UserProfile.sustainedHighFloorBPM).")
+
+            // Legacy stored values can still contradict each other; the
+            // steppers only clamp on the next tap, so say so instead of
+            // silently rewriting a safety setting.
+            if profile.elevatedThreshold >= profile.criticalHighBPM {
+                WarningRow(text: "Elevated is at or above Critical High — lower it so the sustained alert means something.")
+            }
+            if profile.criticalHighBPM > Int(profile.maxHR) {
+                WarningRow(text: "Critical High is above your max HR (\(Int(profile.maxHR)) bpm) — readings this high are unusual for you, so this alert may never fire.")
+            }
+
+            Button("Restore Default Alert Levels") {
+                confirmRestoreDefaults = true
+            }
+            .confirmationDialog(
+                "Restore default alert levels?",
+                isPresented: $confirmRestoreDefaults,
+                titleVisibility: .visible
+            ) {
+                Button("Restore Defaults", role: .destructive) {
+                    profile.restoreDefaultAlertLevels()
+                    Haptics.success()
+                }
+            } message: {
+                Text("Critical High 160 bpm, Elevated HR 100 bpm and Critical Low 40 bpm.")
+            }
+        } header: {
+            Text("Alerts Your Family Receives")
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("While you share live, family gets a time-sensitive alert when your heart rate is at or above Critical High, at or below Critical Low, or stays at or above \(profile.sustainedHighBPM) bpm for \(UserProfile.sustainedHighMinutes) minutes. Workouts can trigger these. Elevated HR also flags samples in History, drives the elevated-time insight and is shown to followers. To change alerts you get about someone you follow, open them in the Family tab.")
+                Text("MyHeart is not a medical device and doesn't contact emergency services. Alerts depend on your Watch syncing and both phones being online, and can be delayed — in an emergency, call your local emergency number.")
+            }
+        }
+    }
+
+    // MARK: Notifications
+
+    private var notificationsSection: some View {
+        Section {
+            LabeledContent("Alerts") {
+                // Icon + word, so the state isn't signalled by color alone.
+                HStack(spacing: 6) {
+                    Image(systemName: notificationStatus.icon)
+                        .foregroundStyle(notificationStatus.tint)
+                        .accessibilityHidden(true)
+                    Text(notificationStatus.text)
+                }
+            }
+            if notifications.isDenied {
+                WarningRow(text: "You won't be alerted when someone you follow has an emergency.")
+            } else if notifications.timeSensitiveDisabled {
+                WarningRow(text: "Time Sensitive is off — Focus modes can silence emergency alerts.")
+            }
+            if notifications.status == .notDetermined {
+                Button("Turn On Alerts") {
+                    Task { await notifications.requestIfNeeded() }
+                }
+            } else {
+                Button("Notification Settings") {
+                    notifications.openSystemSettings()
+                }
+            }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text("MyHeart uses notifications to alert you about people you follow. Emergency alerts are Time Sensitive so they can break through Focus.")
+        }
+    }
+
+    private var notificationStatus: (text: String, icon: String, tint: Color) {
+        switch notifications.status {
+        case .authorized:
+            return ("On", "checkmark.circle.fill", .green)
+        case .provisional, .ephemeral:
+            return ("On (delivered quietly)", "checkmark.circle", .green)
+        case .denied:
+            return ("Off", "xmark.circle.fill", .red)
+        case .notDetermined:
+            return ("Not set up", "questionmark.circle", .secondary)
+        @unknown default:
+            return ("Unknown", "questionmark.circle", .secondary)
+        }
+    }
+
+    // MARK: Health & about
+
+    private var healthSection: some View {
+        Section {
+            if viewModel.healthUnavailable {
+                Text("Apple Health isn't available on this device.")
+                    .foregroundStyle(.secondary)
+            } else {
+                Button {
+                    if let url = URL(string: "x-apple-health://") {
+                        openURL(url)
+                    }
+                } label: {
+                    Label("Open Apple Health", systemImage: "heart.text.square.fill")
+                }
+            }
         } header: {
             Text("Health data")
+        } footer: {
+            if !viewModel.healthUnavailable {
+                Text("To change what MyHeart can read: \(HealthCopy.permissionPath)")
+            }
         }
     }
 
     private var aboutSection: some View {
         Section {
-            LabeledRow(label: "Version", value: appVersion)
-            LabeledRow(label: "Data", value: "Apple Health + your iCloud")
+            LabeledContent("Version", value: appVersion)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = appVersion
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
+            NavigationLink {
+                PrivacyDataView()
+            } label: {
+                Label("Privacy & Data", systemImage: "hand.raised.fill")
+            }
         } header: {
             Text("About")
         } footer: {
-            Text("MyHeart reads your data from Apple Health and never writes to it. Reports are generated on this device and shared only when you tap Export. Live sharing, when you turn it on, stores your latest reading in your own iCloud account and is visible only to people with your invite link — there is no MyHeart server.")
+            Text("MyHeart is not a medical device and is no substitute for professional medical advice.")
         }
     }
 
@@ -217,24 +459,221 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Rows
+
+/// Label + value row (used as stepper labels). Stacks vertically at
+/// accessibility text sizes so neither side truncates next to the ± control.
 private struct LabeledRow: View {
     let label: String
     let value: String
     var secondary: String? = nil
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
-        HStack {
-            Text(label)
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
                 Text(value)
                     .foregroundStyle(.primary)
+                    .fontWeight(.semibold)
                 if let secondary {
                     Text(secondary)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
+        } else {
+            HStack {
+                Text(label)
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(value)
+                        .foregroundStyle(.primary)
+                    if let secondary {
+                        Text(secondary)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Label + text field row; the field moves below its label at accessibility
+/// text sizes.
+private struct FieldRow<Content: View>: View {
+    let label: String
+    @ViewBuilder var field: Content
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .accessibilityHidden(true)
+                field
+            }
+        } else {
+            HStack {
+                // The text field's own title already names it for VoiceOver.
+                Text(label)
+                    .accessibilityHidden(true)
+                Spacer()
+                field
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+    }
+}
+
+/// Inline warning; the icon (not only the color) marks it as a warning.
+private struct WarningRow: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Warning: \(text)")
+    }
+}
+
+// MARK: - Privacy & data
+
+private struct PrivacyDataView: View {
+    var body: some View {
+        List {
+            Section {
+                point(
+                    "Reads Apple Health, never writes",
+                    detail: "MyHeart reads the Health data you allow it to and never changes or adds to it.",
+                    systemImage: "heart.text.square.fill"
+                )
+                point(
+                    "Reports stay on this device",
+                    detail: "PDF reports are made on your iPhone and only leave it when you tap Export and choose where to send them.",
+                    systemImage: "doc.richtext"
+                )
+                point(
+                    "Live sharing uses your iCloud",
+                    detail: "When you turn it on, your latest reading is stored in your own iCloud account. Only people with your invite link can see it, and you can stop sharing in the Family tab at any time.",
+                    systemImage: "icloud.fill"
+                )
+                point(
+                    "What followers see",
+                    detail: "Your display name, latest heart rate and zone, resting heart rate and HRV, a 24-hour trend, the device that recorded it, and your emergency contact if you added one.",
+                    systemImage: "person.2.fill"
+                )
+                point(
+                    "No MyHeart server",
+                    detail: "There is no MyHeart account or server; your data moves only between Apple Health, your iCloud and the people you invite.",
+                    systemImage: "lock.fill"
+                )
+            } footer: {
+                Text("MyHeart is not a medical device and doesn't contact emergency services.")
+            }
+        }
+        .navigationTitle("Privacy & Data")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func point(_ title: String, detail: String, systemImage: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(.pink)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Contact picker
+
+/// Presents the system contact picker, which needs no Contacts permission
+/// (it runs out of process and only hands back what the user taps).
+/// Driven by a counter rather than a Bool, so a picker dismissed by a swipe
+/// (which may not report a cancel) can always be opened again.
+private struct ContactPickerPresenter: UIViewControllerRepresentable {
+    let request: Int
+    let onPick: (_ name: String, _ phone: String) -> Void
+
+    // Starts at the current request, so a re-created presenter never opens
+    // the picker for a tap that was already handled.
+    func makeCoordinator() -> Coordinator { Coordinator(handledRequest: request) }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        let host = UIViewController()
+        host.view.isUserInteractionEnabled = false
+        return host
+    }
+
+    func updateUIViewController(_ host: UIViewController, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onPick = onPick
+        guard request != coordinator.handledRequest else { return }
+        coordinator.handledRequest = request
+        guard host.presentedViewController == nil else { return }
+
+        let picker = CNContactPickerViewController()
+        picker.delegate = coordinator
+        picker.displayedPropertyKeys = [CNContactPhoneNumbersKey]
+        picker.predicateForEnablingContact = NSPredicate(format: "phoneNumbers.@count > 0")
+        // One number → pick the contact directly; several → the user picks
+        // the number on the contact card.
+        picker.predicateForSelectionOfContact = NSPredicate(format: "phoneNumbers.@count == 1")
+        host.present(picker, animated: true)
+    }
+
+    final class Coordinator: NSObject, CNContactPickerDelegate {
+        var handledRequest: Int
+        var onPick: ((_ name: String, _ phone: String) -> Void)?
+
+        init(handledRequest: Int) {
+            self.handledRequest = handledRequest
+        }
+
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect contact: CNContact) {
+            guard contact.isKeyAvailable(CNContactPhoneNumbersKey),
+                  let number = contact.phoneNumbers.first?.value.stringValue else { return }
+            onPick?(Self.name(of: contact), number)
+        }
+
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect contactProperty: CNContactProperty) {
+            guard let number = (contactProperty.value as? CNPhoneNumber)?.stringValue else { return }
+            onPick?(Self.name(of: contactProperty.contact), number)
+        }
+
+        /// Picker contacts are partial; only format the keys that were fetched.
+        private static func name(of contact: CNContact) -> String {
+            let nameKeys = CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
+            if contact.areKeysAvailable([nameKeys]),
+               let full = CNContactFormatter.string(from: contact, style: .fullName),
+               !full.isEmpty {
+                return full
+            }
+            if contact.isKeyAvailable(CNContactOrganizationNameKey) {
+                return contact.organizationName
+            }
+            return ""
         }
     }
 }
@@ -242,4 +681,7 @@ private struct LabeledRow: View {
 #Preview {
     SettingsView(profile: .shared)
         .environmentObject(HeartRateViewModel.preview)
+        .environmentObject(LiveSharingService.shared)
+        .environmentObject(NotificationPermission.shared)
+        .environmentObject(AppRouter.shared)
 }

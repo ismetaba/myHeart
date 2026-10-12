@@ -27,7 +27,8 @@ final class UserProfile: ObservableObject {
         didSet { storedMaxHROverride = maxHROverride }
     }
 
-    /// Threshold used for "elevated HR" insights and the history flag.
+    /// Threshold used for "elevated HR" insights, the history flag, and (via
+    /// `sustainedHighBPM`) the sustained-high family alert.
     @Published var elevatedThreshold: Int {
         didSet { storedElevatedThreshold = elevatedThreshold }
     }
@@ -72,6 +73,23 @@ final class UserProfile: ObservableObject {
         self.criticalLowBPM = low == 0 ? 40 : low
         self.emergencyContact = defaults.string(forKey: "profile.emergencyContact") ?? ""
         self.emergencyContactName = defaults.string(forKey: "profile.emergencyContactName") ?? ""
+    }
+
+    /// Minutes at or above `sustainedHighBPM` before family is alerted.
+    static let sustainedHighMinutes = 10
+    /// The sustained-high alert never starts below this, so a low Elevated
+    /// setting doesn't page family during an ordinary brisk walk.
+    static let sustainedHighFloorBPM = 120
+
+    /// Single source for the sustained-high family alert level, so what
+    /// Settings shows and what gets evaluated can't drift apart.
+    var sustainedHighBPM: Int { max(elevatedThreshold, Self.sustainedHighFloorBPM) }
+
+    /// Back to the first-launch alert levels (same values as in `init`).
+    func restoreDefaultAlertLevels() {
+        criticalHighBPM = 160
+        elevatedThreshold = 100
+        criticalLowBPM = 40
     }
 
     var hasEmergencyContact: Bool {

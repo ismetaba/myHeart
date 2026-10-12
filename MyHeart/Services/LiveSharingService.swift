@@ -53,10 +53,10 @@ final class LiveSharingService: ObservableObject {
     /// False until the first iCloud account check returned (or failed), so
     /// the UI can show "Checking…" instead of a misleading error.
     @Published private(set) var hasCheckedAccount = false
-    /// The last account check threw (usually no network).
-    @Published private(set) var accountCheckFailed = false
     /// Set once the sharing state was read from iCloud for the current account.
     @Published private(set) var didLoadSharingState = false
+    /// A sharing-state read is in flight.
+    @Published private(set) var isLoadingSharingState = false
     /// The first full bootstrap finished, so an empty followed list really
     /// means "nobody" rather than "not loaded yet".
     @Published private(set) var hasBootstrapped = false
@@ -148,10 +148,8 @@ final class LiveSharingService: ObservableObject {
     func refreshAccountStatus() async {
         do {
             accountStatus = try await container.accountStatus()
-            accountCheckFailed = false
         } catch {
             accountStatus = .couldNotDetermine
-            accountCheckFailed = true
         }
         hasCheckedAccount = true
     }
@@ -239,6 +237,8 @@ final class LiveSharingService: ObservableObject {
     /// "Preparing invite link…" forever.
     func loadSharingState() async {
         guard accountStatus == .available else { return }
+        isLoadingSharingState = true
+        defer { isLoadingSharingState = false }
         do {
             let record = try await privateDB.record(for: CloudKitConfig.liveStatusRecordID)
             cachedRecord = record
