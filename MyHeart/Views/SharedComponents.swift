@@ -125,7 +125,8 @@ struct ZoneChip: View {
         HStack(spacing: size == .small ? 4 : 6) {
             Image(systemName: zone.systemImage)
                 .font(iconFont)
-            Text(size == .small ? zone.short : zone.label)
+            // Full names everywhere: the short forms ("Card", "Fat") read as words.
+            Text(zone.label)
                 .font(textFont)
         }
         .padding(.horizontal, size == .small ? 8 : (size == .large ? 14 : 10))

@@ -78,8 +78,7 @@ struct ContentView: View {
         }
         if didOnboard {
             didStartHealth = true
-            await viewModel.bootstrap()
-            await overviewVM.bootstrap()
+            await loadHealthData(authorized: await viewModel.authorize())
         } else {
             showOnboarding = true
         }
@@ -88,10 +87,21 @@ struct ContentView: View {
     private func finishOnboarding() async {
         didStartHealth = true
         // Presents the Health permission sheet over the welcome screen.
-        await viewModel.bootstrap()
+        let authorized = await viewModel.authorize()
         didOnboard = true
         showOnboarding = false
+        await loadHealthData(authorized: authorized)
+    }
+
+    /// Loads the Heart and Health tabs side by side, so the Health tab (the
+    /// first one users see) doesn't wait for a long heart-rate range.
+    /// The overview always bootstraps — its screen relies on `hasLoaded`.
+    private func loadHealthData(authorized: Bool) async {
+        let heart = Task { @MainActor in
+            if authorized { await viewModel.refresh() }
+        }
         await overviewVM.bootstrap()
+        await heart.value
     }
 }
 

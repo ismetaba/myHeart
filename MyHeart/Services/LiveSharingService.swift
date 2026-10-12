@@ -464,7 +464,7 @@ final class LiveSharingService: ObservableObject {
     }
 
     /// Log helper — prefixed so it's grep-able in the Xcode console.
-    static func log(_ msg: @autoclosure () -> String) {
+    nonisolated static func log(_ msg: @autoclosure () -> String) {
         #if DEBUG
         print("[Sharing] \(msg())")
         #endif

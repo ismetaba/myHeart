@@ -303,8 +303,13 @@ struct SettingsView: View {
             if profile.elevatedThreshold >= profile.criticalHighBPM {
                 WarningRow(text: "Elevated is at or above Critical High — lower it so the sustained alert means something.")
             }
-            if profile.criticalHighBPM > Int(profile.maxHR) {
-                WarningRow(text: "Critical High is above your max HR (\(Int(profile.maxHR)) bpm) — readings this high are unusual for you, so this alert may never fire.")
+            // Only a measured max is worth a warning. The 220 − age estimate
+            // is below the 160 default from age 61, and abnormal rhythms can
+            // exceed it, so there it's just a note — nothing to "fix".
+            if profile.isMaxHROverridden && profile.criticalHighBPM > profile.maxHROverride {
+                WarningRow(text: "Critical High is above the max HR you entered (\(profile.maxHROverride) bpm), so it only fires for readings above your own maximum.")
+            } else if !profile.isMaxHROverridden && profile.criticalHighBPM > profile.formulaMaxHR {
+                NoteRow(text: "Critical High is above your estimated max HR (\(profile.formulaMaxHR) bpm), so it only catches unusually high readings.")
             }
 
             Button("Restore Default Alert Levels") {
@@ -326,7 +331,7 @@ struct SettingsView: View {
             Text("Alerts Your Family Receives")
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
-                Text("While you share live, family gets a time-sensitive alert when your heart rate is at or above Critical High, at or below Critical Low, or stays at or above \(profile.sustainedHighBPM) bpm for \(UserProfile.sustainedHighMinutes) minutes. Workouts can trigger these. Elevated HR also flags samples in History, drives the elevated-time insight and is shown to followers. To change alerts you get about someone you follow, open them in the Family tab.")
+                Text("While you share live, family gets a time-sensitive alert when your heart rate is at or above Critical High, at or below Critical Low, or stays at or above \(profile.sustainedHighBPM) bpm for \(UserProfile.sustainedHighMinutes) minutes. Workouts can trigger these. Elevated HR also flags samples in History, drives the elevated-time insight and is shown to followers; it stays at least 5 bpm below Critical High. To change alerts you get about someone you follow, open them in the Family tab.")
                 Text("MyHeart is not a medical device and doesn't contact emergency services. Alerts depend on your Watch syncing and both phones being online, and can be delayed — in an emergency, call your local emergency number.")
             }
         }
@@ -529,6 +534,24 @@ private struct FieldRow<Content: View>: View {
     }
 }
 
+/// Neutral counterpart of `WarningRow`, for context that needs no action.
+private struct NoteRow: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Inline warning; the icon (not only the color) marks it as a warning.
 private struct WarningRow: View {
     let text: String
@@ -571,7 +594,7 @@ private struct PrivacyDataView: View {
                 )
                 point(
                     "What followers see",
-                    detail: "Your display name, latest heart rate and zone, resting heart rate and HRV, a 24-hour trend, the device that recorded it, and your emergency contact if you added one.",
+                    detail: "Your display name, latest heart rate and zone and when it was recorded, resting heart rate and HRV, a 24-hour trend, the device that recorded it, your Elevated HR (shown as your “usual limit”) and max heart rate, whether a reading counts as an emergency and since when, and your emergency contact if you added one.",
                     systemImage: "person.2.fill"
                 )
                 point(

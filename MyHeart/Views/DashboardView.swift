@@ -355,7 +355,8 @@ struct DashboardView: View {
         if profile.isMaxHROverridden {
             return "Zones use your max heart rate of \(maxHR) bpm. Change it in Settings."
         }
-        return "Zones use an estimated max heart rate of \(maxHR) bpm (220 − age \(profile.age)). Set your age in Settings."
+        // No formula here: the 120 bpm floor would contradict "220 − age".
+        return "Zones use an estimated max heart rate of \(maxHR) bpm, based on age \(profile.age). You can change your age or max heart rate in Settings."
     }
 
     private var insightsCard: some View {
@@ -369,7 +370,9 @@ struct DashboardView: View {
     private var overallChartCard: some View {
         CardContainer(title: "Trend", subtitle: trendSubtitle) {
             if viewModel.samples.isEmpty {
-                if viewModel.isLoading || viewModel.isFirstLoadPending {
+                // Same-range refreshes keep the empty card instead of
+                // flickering to a spinner and back.
+                if viewModel.isSwitchingRange || viewModel.isFirstLoadPending {
                     chartLoadingState
                 } else {
                     emptyChartState
@@ -464,7 +467,7 @@ struct DashboardView: View {
             if !viewModel.hasDailyData {
                 // `dailyStats` has an entry for every day even without samples,
                 // so check for actual values before showing the cards.
-                if viewModel.isLoading || viewModel.isFirstLoadPending {
+                if viewModel.isSwitchingDailyRange || viewModel.isFirstLoadPending {
                     chartLoadingState
                         .cardBackground()
                 } else {
@@ -706,7 +709,9 @@ struct DashboardView: View {
     private var dailyListCard: some View {
         CardContainer(title: "Per-Day Breakdown", subtitle: nil) {
             VStack(spacing: 0) {
-                ForEach(Array(viewModel.dailyStats.enumerated()), id: \.element.id) { index, day in
+                // Keyed by the calendar day: `id` is new on every load, and a
+                // changed identity would pop a pushed day detail mid-refresh.
+                ForEach(Array(viewModel.dailyStats.enumerated()), id: \.element.day) { index, day in
                     dailyListRow(day)
                     if index < viewModel.dailyStats.count - 1 {
                         Divider().padding(.leading, 14)
@@ -1361,17 +1366,27 @@ private struct ZoneStripMini: View {
 /// One day's 24-hour curve, pushed from the per-day list. Before, the only
 /// way to see it was exporting the PDF.
 private struct HeartDayDetailView: View {
+    /// The row's stats at push time; `liveStats` follows later refreshes.
     let day: DailyHeartRateStats
     @EnvironmentObject var viewModel: HeartRateViewModel
     @EnvironmentObject var profile: UserProfile
     @Environment(\.dynamicTypeSize) var typeSize
 
+    /// Background refreshes replace `dailyStats` while this is pushed; the
+    /// live entry keeps the summary in step with the chart and zones.
+    private var liveStats: DailyHeartRateStats {
+        viewModel.dailyStats.first { $0.day == day.day } ?? day
+    }
+
     var body: some View {
+        let stats = liveStats
         let cal = Calendar.current
         let dayEnd = cal.date(byAdding: .day, value: 1, to: day.day) ?? day.day.addingTimeInterval(86_400)
         // Filtered here rather than in init: NavigationLink builds its
         // destination for every row up front, but body only runs once pushed.
-        let daySamples = viewModel.dailySamples.filter { cal.isDate($0.date, inSameDayAs: day.day) }
+        // A plain range check: body reruns on every view-model publish, and
+        // a calendar computation per sample is too slow for a 31-day range.
+        let daySamples = viewModel.dailySamples.filter { $0.date >= day.day && $0.date < dayEnd }
         let buckets = daySamples.count > HeartRateViewModel.rawChartLimit
             ? HeartRateBucket.make(from: daySamples, start: day.day, end: dayEnd, maxBuckets: HeartRateViewModel.chartBucketCount)
             : []
@@ -1379,7 +1394,7 @@ private struct HeartDayDetailView: View {
 
         ScrollView {
             VStack(spacing: 16) {
-                summaryCard(readings: daySamples.count)
+                summaryCard(stats, readings: daySamples.count)
 
                 CardContainer(title: "24-Hour Chart", subtitle: nil) {
                     if daySamples.isEmpty {
@@ -1392,7 +1407,7 @@ private struct HeartDayDetailView: View {
                         OverallChart(
                             samples: daySamples,
                             buckets: buckets,
-                            averageBPM: day.avgBPM,
+                            averageBPM: stats.avgBPM,
                             range: .day1,
                             xDomain: day.day...dayEnd,
                             plotHeight: 260,
@@ -1428,13 +1443,13 @@ private struct HeartDayDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func summaryCard(readings: Int) -> some View {
+    private func summaryCard(_ stats: DailyHeartRateStats, readings: Int) -> some View {
         CardContainer(title: "Summary", subtitle: readings == 1 ? "1 reading" : "\(readings.formatted()) readings") {
             LazyVGrid(columns: columns, spacing: 10) {
-                CompactMetricRow(label: "Average", value: DashboardText.whole(day.avgBPM), unit: "bpm", icon: "waveform.path.ecg")
-                CompactMetricRow(label: "Resting", value: DashboardText.whole(day.restingBPM), unit: "bpm", icon: "bed.double.fill")
-                CompactMetricRow(label: "Lowest", value: DashboardText.whole(day.minBPM), unit: "bpm", icon: "arrow.down.heart")
-                CompactMetricRow(label: "Highest", value: DashboardText.whole(day.maxBPM), unit: "bpm", icon: "arrow.up.heart")
+                CompactMetricRow(label: "Average", value: DashboardText.whole(stats.avgBPM), unit: "bpm", icon: "waveform.path.ecg")
+                CompactMetricRow(label: "Resting", value: DashboardText.whole(stats.restingBPM), unit: "bpm", icon: "bed.double.fill")
+                CompactMetricRow(label: "Lowest", value: DashboardText.whole(stats.minBPM), unit: "bpm", icon: "arrow.down.heart")
+                CompactMetricRow(label: "Highest", value: DashboardText.whole(stats.maxBPM), unit: "bpm", icon: "arrow.up.heart")
             }
         }
     }

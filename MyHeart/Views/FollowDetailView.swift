@@ -604,6 +604,10 @@ struct FollowDetailView: View {
                 .tint(FamilyStyle.emergencyFill)
                 .controlSize(.large)
                 .accessibilityLabel("Call \(contactDisplayName)")
+                // The label alone drops the number shown under a named contact.
+                .accessibilityValue(current.status.emergencyContactName?.isEmpty == false
+                                    ? (current.status.emergencyContactPhone ?? "")
+                                    : "")
             }
         }
     }

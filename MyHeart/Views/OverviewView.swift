@@ -46,8 +46,15 @@ struct OverviewView: View {
                     }
                 }
             }
-            .refreshable { await viewModel.refresh() }
+            .refreshable { await pullToRefresh() }
         }
+    }
+
+    /// Pull-to-refresh can't be removed per state, so without Health it does
+    /// nothing rather than run a batch of queries that can only fail.
+    private func pullToRefresh() async {
+        guard !healthUnavailable else { return }
+        await viewModel.refresh()
     }
 
     /// Until the first refresh finishes, cards render this fixed snapshot
@@ -73,6 +80,14 @@ struct OverviewView: View {
         dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
+    }
+
+    /// The sleep hero never shrinks its digits, so at accessibility sizes its
+    /// caption goes underneath instead of being squeezed beside it.
+    private var heroCaptionLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
     }
 
     /// Two columns on iPhone, more on iPad, one at accessibility sizes.
@@ -289,7 +304,7 @@ struct OverviewView: View {
                     title: "Sleep"
                 ) {
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        heroCaptionLayout {
                             DurationHero(
                                 seconds: sleep.totalSeconds,
                                 numberFont: .system(.largeTitle, design: .rounded, weight: .bold),
@@ -1130,6 +1145,8 @@ struct MiniMetricTile: View {
 
 /// A sleep duration as large digits with small grey unit letters ("7h 30m"),
 /// so it can't be read as a clock time next to bedtime and wake times.
+/// It always takes its full width: callers move their caption out of the way
+/// at large text sizes rather than have a digit truncate.
 struct DurationHero: View {
     let seconds: TimeInterval
     let numberFont: Font
@@ -1161,6 +1178,7 @@ struct DurationHero: View {
         }
         .monospacedDigit()
         .lineLimit(1)
+        .fixedSize()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(HealthFormat.spokenDuration(seconds))
     }

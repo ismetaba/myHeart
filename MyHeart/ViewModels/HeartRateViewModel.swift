@@ -168,19 +168,27 @@ final class HeartRateViewModel: ObservableObject {
     }
 
     func bootstrap() async {
+        if await authorize() {
+            await refresh()
+        }
+    }
+
+    /// Requests Health access (shows the system sheet the first time) and
+    /// starts live publishing. Returns false when Health can't be used.
+    func authorize() async -> Bool {
         do {
             try await health.requestAuthorization()
         } catch HealthKitError.notAvailable {
             // Not an error the user can fix — screens explain it inline.
             healthUnavailable = true
-            return
+            return false
         } catch {
             authorizationError = error.localizedDescription
-            return
+            return false
         }
         hasBootstrapped = true
         await LiveStatusPublisher.shared.start()
-        await refresh()
+        return true
     }
 
     func refresh() async {

@@ -196,7 +196,8 @@ struct FamilyView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(urgent.count == 1
                                 ? "Emergency. \(first.status.displayName) needs attention: \(first.status.emergencyKind?.label ?? "emergency")"
-                                : "Emergency. \(urgent.count) people need attention")
+                                : "Emergency. \(ListFormatter.localizedString(byJoining: urgent.map(\.status.displayName))) need attention")
+            .accessibilityHint(urgent.count == 1 ? "Opens their details" : "Shows the Following list")
         }
     }
 
@@ -607,11 +608,17 @@ struct FamilyView: View {
                     .font(.footnote)
                 }
                 Spacer(minLength: 8)
-                Button("Edit") { showContactSheet = true }
-                    .font(.footnote.weight(.semibold))
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-                    .accessibilityLabel("Edit emergency contact")
+                Button {
+                    showContactSheet = true
+                } label: {
+                    // Sizing lives in the label: outside the Button it
+                    // wouldn't enlarge the tap target.
+                    Text("Edit")
+                        .font(.footnote.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Edit emergency contact")
             }
         } else {
             Button {
@@ -707,7 +714,10 @@ struct FamilyView: View {
         switch state {
         case .live:
             color = .green
-            text = "Live — family sees your latest reading"
+            // Don't claim an audience the followers row below says isn't there.
+            text = sharing.participantCount > 0
+                ? "Live — family sees your latest reading"
+                : "Live — ready as soon as someone joins"
         case .waiting(let lastReading?):
             color = .orange
             text = "Sharing is on, but there's no new reading since \(lastReading.formatted(date: .omitted, time: .shortened)). Is your Apple Watch on?"

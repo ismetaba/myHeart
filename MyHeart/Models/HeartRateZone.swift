@@ -197,13 +197,6 @@ enum DurationFormat {
         if h > 0 && m > 0 { return "\(h)h \(m)m" }
         if h > 0 { return "\(h)h" }
         if m > 0 { return "\(m)m" }
-        return "<1m"
-    }
-
-    static func hoursMinutes(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded())
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        return String(format: "%d:%02d", h, m)
+        return total == 0 ? "0m" : "<1m"
     }
 }

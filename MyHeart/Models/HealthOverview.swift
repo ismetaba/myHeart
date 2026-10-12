@@ -280,6 +280,8 @@ enum HealthFormat {
     /// "7 hours, 30 minutes" for VoiceOver, matching what `duration` shows.
     static func spokenDuration(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
+        // `duration` shows "<1m" here; flooring would say "0 minutes".
+        if total > 0 && total < 60 { return "less than a minute" }
         let shown = (total / 3600) * 3600 + ((total % 3600) / 60) * 60
         return Duration.seconds(shown).formatted(.units(allowed: [.hours, .minutes], width: .wide))
     }

@@ -26,7 +26,7 @@ enum SharingError: LocalizedError, Equatable {
     static func wrap(_ error: Error) -> SharingError {
         if let sharing = error as? SharingError { return sharing }
         guard let ck = error as? CKError else {
-            return .unknown(error.localizedDescription)
+            return unexpected(error.localizedDescription)
         }
 
         // Batch operations report the real cause per item.
@@ -61,8 +61,19 @@ enum SharingError: LocalizedError, Equatable {
         case .serverRecordChanged:            return .conflict
         case .unknownItem:                    return .shareUnavailable
         default:
-            return .unknown(ck.localizedDescription)
+            return unexpected(ck.localizedDescription)
         }
+    }
+
+    /// Raw CloudKit wording is useful while developing but meaningless to
+    /// family members, so release builds show a plain sentence instead.
+    private static func unexpected(_ detail: String) -> SharingError {
+        LiveSharingService.log("unexpected iCloud error: \(detail)")
+        #if DEBUG
+        return .unknown(detail)
+        #else
+        return .unknown("Something went wrong with iCloud. Please try again.")
+        #endif
     }
 
     /// Short sentence for inline error UI.
@@ -87,7 +98,11 @@ enum SharingError: LocalizedError, Equatable {
         case .ownShare:
             return "That's your own invite link — send it to family members instead."
         case .containerNotConfigured:
+            #if DEBUG
             return "iCloud container isn't provisioned yet. Open Xcode → Signing & Capabilities, select your Team, and enable the iCloud / CloudKit capability."
+            #else
+            return "Live sharing isn't available right now. Please try again later."
+            #endif
         case .unknown(let detail):
             return detail
         }

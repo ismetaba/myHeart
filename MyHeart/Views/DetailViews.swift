@@ -87,17 +87,18 @@ struct MetricDetailView: View {
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
             if hasData {
+                let average = kind == .cumulative ? HealthOverview.completedDayAverage(last7) : mean
                 DailyBarChart(
                     points: last7,
                     tint: tint,
                     metricName: title,
                     unit: unit,
                     format: { formatValue($0) },
-                    average: kind == .cumulative ? HealthOverview.completedDayAverage(last7) : mean,
+                    average: average,
                     fadesToday: kind == .cumulative
                 )
                 if kind == .cumulative {
-                    DailyBarChart.TodayNote(points: last7)
+                    DailyBarChart.TodayNote(points: last7, average: average)
                 }
             } else {
                 ChartNoDataText()
@@ -239,15 +240,16 @@ struct ActivityDetailView: View {
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
             if HealthOverview.hasData(points) {
+                let average = HealthOverview.completedDayAverage(points)
                 DailyBarChart(
                     points: points,
                     tint: tint,
                     metricName: title,
                     unit: unit,
                     format: { HealthFormat.number($0) },
-                    average: HealthOverview.completedDayAverage(points)
+                    average: average
                 )
-                DailyBarChart.TodayNote(points: points)
+                DailyBarChart.TodayNote(points: points, average: average)
             } else {
                 ChartNoDataText()
             }
@@ -415,17 +417,18 @@ struct SleepDetailView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            heroCaptionLayout {
                 DurationHero(
                     seconds: sleep.totalSeconds,
-                    numberFont: .system(size: heroSize, weight: .bold, design: .rounded),
+                    // Capped because the hero never shrinks to fit; past this
+                    // "12h 59m" would outgrow a phone-width card.
+                    numberFont: .system(size: min(heroSize, 72), weight: .bold, design: .rounded),
                     unitFont: .title2.weight(.semibold),
                     tint: .indigo
                 )
                 Text(sleep.isInBedOnly ? "in bed" : "asleep")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Spacer()
             }
             if sleep.isInBedOnly {
                 Text("Only time in bed was recorded. Wear Apple Watch to bed to see sleep stages.")
@@ -517,6 +520,14 @@ struct SleepDetailView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardBackground()
+    }
+
+    /// At accessibility sizes the caption goes under the hero digits, which
+    /// would otherwise leave it a few points and break it mid-word.
+    private var heroCaptionLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
     }
 
     private var scheduleLayout: AnyLayout {
@@ -673,13 +684,19 @@ struct DailyBarChart: View {
         return isPartial(p) ? "\(spoken) so far" : spoken
     }
 
-    /// Explains the lighter bar, shown under the chart when today is in it.
+    /// Explains the lighter bar, shown under the chart while today has one.
     struct TodayNote: View {
         let points: [MetricPoint]
+        /// The average line drawn on the chart, if any. A first day has no
+        /// finished day to average, so the note mustn't mention one.
+        let average: Double?
 
         var body: some View {
-            if points.contains(where: { Calendar.current.isDateInToday($0.date) }) {
-                Text("Today's bar is still filling up and isn't counted in the average.")
+            // A zero bar isn't drawn, so there's nothing to explain.
+            if let today = points.first(where: { Calendar.current.isDateInToday($0.date) }), today.value > 0 {
+                Text(average == nil
+                     ? "Today's bar is still filling up."
+                     : "Today's bar is still filling up and isn't counted in the average.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

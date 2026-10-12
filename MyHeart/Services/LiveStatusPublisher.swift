@@ -136,8 +136,8 @@ final class LiveStatusPublisher {
             let thresholds = EmergencyEvaluator.Thresholds(
                 criticalHighBPM: profile.criticalHighBPM,
                 criticalLowBPM: profile.criticalLowBPM,
-                sustainedHighBPM: max(profile.elevatedThreshold, 120),
-                sustainedMinutes: 10
+                sustainedHighBPM: profile.sustainedHighBPM,
+                sustainedMinutes: UserProfile.sustainedHighMinutes
             )
             let result = EmergencyEvaluator.evaluate(
                 currentBPM: bpm,

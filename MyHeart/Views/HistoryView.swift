@@ -57,7 +57,10 @@ struct HistoryView: View {
         if viewModel.healthUnavailable {
             healthUnavailableState
         } else if currentSamples.isEmpty && !isPullRefreshing
-                    && (viewModel.isFirstLoadPending || viewModel.isLoading) {
+                    // Only for the first load or a range switch: background
+                    // refreshes keep the empty state (and its buttons) still.
+                    && (viewModel.isFirstLoadPending || viewModel.isSwitchingRange
+                        || viewModel.isSwitchingDailyRange) {
             ProgressView("Loading heart rate…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemGroupedBackground))
@@ -102,7 +105,8 @@ struct HistoryView: View {
     private var rangeDescription: String {
         switch viewModel.mode {
         case .overall:
-            return viewModel.selectedRange.fullTitle
+            // The rows' range, which trails the menu while a switch loads or after it failed.
+            return viewModel.loadedRange.fullTitle
         case .daily:
             let style = Date.FormatStyle.dateTime.month(.abbreviated).day()
             return "\(viewModel.dailyStart.formatted(style)) – \(viewModel.dailyEnd.formatted(style))"
